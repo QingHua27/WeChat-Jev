@@ -51,6 +51,16 @@ class Wechat072MessageAdapter(
             logger("target_class_unavailable")
             return HookInstallResult.TARGET_CLASS_UNAVAILABLE
         }
+        val baseMessageClass = runCatching {
+            classResolver("sm.b8", classLoader)
+        }.getOrElse {
+            logger("target_class_unavailable")
+            return HookInstallResult.TARGET_CLASS_UNAVAILABLE
+        }
+        if (!baseMessageClass.isAssignableFrom(messageClass)) {
+            logger("message_class_hierarchy_unavailable")
+            return HookInstallResult.FAILED
+        }
         val targetMethod = runCatching {
             storageClass.getDeclaredMethod("Cb", messageClass)
         }.getOrElse {

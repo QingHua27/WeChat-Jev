@@ -40,6 +40,19 @@ class Wechat072MessageAdapterTest {
     }
 
     @Test
+    fun `resolves the known message base class`() {
+        val resolvedNames = mutableListOf<String>()
+        val installer = RecordingAfterHookInstaller()
+        val adapter = adapter(installer) { name, loader ->
+            resolvedNames += name
+            resolveFixture(name, loader)
+        }
+
+        assertEquals(HookInstallResult.INSTALLED, adapter.installForClassLoader(testClassLoader) { })
+        assertTrue(resolvedNames.contains("sm.b8"))
+    }
+
+    @Test
     fun `returns target class unavailable without installing`() {
         val installer = RecordingAfterHookInstaller()
         val adapter = adapter(installer) { name, _ ->
@@ -60,6 +73,7 @@ class Wechat072MessageAdapterTest {
             when (name) {
                 "com.tencent.mm.storage.f9" -> FixtureMessage::class.java
                 "com.tencent.mm.storage.h9" -> FixtureStorageWithoutTarget::class.java
+                "sm.b8" -> FixtureBaseMessage::class.java
                 else -> throw ClassNotFoundException(name)
             }
         }
@@ -149,6 +163,7 @@ class Wechat072MessageAdapterTest {
     private fun resolveFixture(name: String, @Suppress("UNUSED_PARAMETER") loader: ClassLoader): Class<*> = when (name) {
         "com.tencent.mm.storage.f9" -> FixtureMessage::class.java
         "com.tencent.mm.storage.h9" -> FixtureStorage::class.java
+        "sm.b8" -> FixtureBaseMessage::class.java
         else -> throw ClassNotFoundException(name)
     }
 
@@ -180,6 +195,8 @@ class Wechat072MessageAdapterTest {
     }
 }
 
+open class FixtureBaseMessage
+
 data class FixtureMessage(
     private val type: Int = 1,
     private val content: String = "你好",
@@ -188,7 +205,7 @@ data class FixtureMessage(
     private val createTime: Long = 1_700_000_000L,
     private val msgId: Long = 1L,
     private val msgSvrId: Long = 2L,
-) {
+) : FixtureBaseMessage() {
     fun getType(): Int = type
     fun j(): String = content
     fun O0(): String = talker

@@ -51,8 +51,13 @@ class MessageCaptureCoordinator(
 
     fun latestConversation(): Conversation? {
         val id = latestConversationId ?: return null
-        val messages = messagesByConversation[id].orEmpty()
+        return latestConversation(id)
+    }
+
+    fun latestConversation(conversationId: String): Conversation? {
+        val messages = messagesByConversation[conversationId].orEmpty()
         if (messages.isEmpty()) return null
         return Conversation(text = messages.joinToString("\n") { it.text })
     }
+
 }

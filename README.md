@@ -112,6 +112,19 @@ Rollback is reversible: disable the module for WeChat in LSPosed or remove the `
 
 The current supported-version and target-method assumptions are recorded in [the Phase 4 design spec](docs/superpowers/specs/2026-09-21-jev-phase4-wechat-hook-design.md). Adding another WeChat version requires a separate adapter and tests; the existing adapter intentionally stays inert for it.
 
+## Phase 5: opt-in realtime analysis
+
+Realtime analysis is disabled by default. To enable it:
+
+1. Open Settings and turn on `实时分析助手`.
+2. Read the consent dialog and choose `确认开启`; cancelling does not persist the setting.
+3. Grant overlay permission if prompted, then manually choose `启动悬浮助手`.
+4. Keep the Xposed pairing and WeChat scope configured if using real-message capture.
+
+Accepted messages for the same conversation are merged during a 700 ms quiet window and then analyzed once. The read-only result is shown in the shared floating surface and saved to local history. If no Jev API Key is configured, the deterministic local fallback completes the flow without credentials. Realtime mode never starts the foreground service by itself and never sends or auto-replies to messages.
+
+To roll back, turn off `实时分析助手` and/or choose `关闭悬浮助手`; pending work is cancelled and the surface is hidden. Disabling the LSPosed WeChat scope or clearing its pairing token remains the rollback for message capture itself. Message bodies, API keys, and pairing tokens are not written to the realtime logs.
+
 ## Remaining verification and next phases
 
-The remaining release work includes a live-key Jev contract test, device-backed SQLCipher verification, manual permission-denial recovery, production hardening of accessibility lifecycle UX, and connected instrumentation coverage. Phase 5 will connect accepted real messages to debounced AI analysis and the read-only floating assistant. The overlay remains opt-in.
+The automated Phase 5 suite passes across the app, IPC contract, and Xposed modules, including app/Xposed lint and both debug APK builds. Final release work still includes a live-key Jev contract test, device-backed SQLCipher verification, manual permission-denial recovery, production hardening of accessibility lifecycle UX, and connected instrumentation coverage. A real-device Phase 5 acceptance run is required when the Android device is connected; it must verify fallback completion, 700 ms coalescing, disable/re-enable recovery, and sanitized logs. The overlay and realtime analysis remain opt-in.

@@ -43,10 +43,10 @@ class Wechat072MessageAdapterTest {
     fun `resolves the known message base class`() {
         val resolvedNames = mutableListOf<String>()
         val installer = RecordingAfterHookInstaller()
-        val adapter = adapter(installer) { name, loader ->
+        val adapter = adapter(installer, resolver = { name, loader ->
             resolvedNames += name
             resolveFixture(name, loader)
-        }
+        })
 
         assertEquals(HookInstallResult.INSTALLED, adapter.installForClassLoader(testClassLoader) { })
         assertTrue(resolvedNames.contains("sm.b8"))
@@ -55,9 +55,9 @@ class Wechat072MessageAdapterTest {
     @Test
     fun `returns target class unavailable without installing`() {
         val installer = RecordingAfterHookInstaller()
-        val adapter = adapter(installer) { name, _ ->
+        val adapter = adapter(installer, resolver = { name, _ ->
             throw ClassNotFoundException(name)
-        }
+        })
 
         assertEquals(
             HookInstallResult.TARGET_CLASS_UNAVAILABLE,
@@ -69,14 +69,14 @@ class Wechat072MessageAdapterTest {
     @Test
     fun `returns target method unavailable without installing`() {
         val installer = RecordingAfterHookInstaller()
-        val adapter = adapter(installer) { name, _ ->
+        val adapter = adapter(installer, resolver = { name, _ ->
             when (name) {
                 "com.tencent.mm.storage.f9" -> FixtureMessage::class.java
                 "com.tencent.mm.storage.h9" -> FixtureStorageWithoutTarget::class.java
                 "sm.b8" -> FixtureBaseMessage::class.java
                 else -> throw ClassNotFoundException(name)
             }
-        }
+        })
 
         assertEquals(
             HookInstallResult.TARGET_METHOD_UNAVAILABLE,
@@ -123,6 +123,20 @@ class Wechat072MessageAdapterTest {
     }
 
     @Test
+    fun `logs only safe metadata for captured message`() {
+        val installer = RecordingAfterHookInstaller()
+        val logs = mutableListOf<String>()
+        val adapter = adapter(installer, logger = { logs += it })
+        assertEquals(HookInstallResult.INSTALLED, adapter.installForClassLoader(testClassLoader) { })
+
+        installer.fireAfterOriginal(FixtureMessage(content = "private-body", isSend = 1, msgId = 73L))
+
+        assertTrue(logs.any { it.contains("message_captured") })
+        assertTrue(logs.any { it.contains("type=1") && it.contains("outgoing=true") && it.contains("id=wechat-8.0.72-73") })
+        assertTrue(logs.none { it.contains("private-body") })
+    }
+
+    @Test
     fun `does not throw when emitter fails`() {
         val installer = RecordingAfterHookInstaller()
         val adapter = adapter(installer)
@@ -154,10 +168,11 @@ class Wechat072MessageAdapterTest {
     private fun adapter(
         installer: RecordingAfterHookInstaller,
         resolver: (String, ClassLoader) -> Class<*> = ::resolveFixture,
+        logger: (String) -> Unit = {},
     ) = Wechat072MessageAdapter(
         installer = installer,
         classResolver = resolver,
-        logger = { _ -> },
+        logger = logger,
     )
 
     private fun resolveFixture(name: String, @Suppress("UNUSED_PARAMETER") loader: ClassLoader): Class<*> = when (name) {

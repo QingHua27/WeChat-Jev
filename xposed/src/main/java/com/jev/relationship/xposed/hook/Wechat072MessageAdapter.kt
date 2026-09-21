@@ -134,6 +134,7 @@ class Wechat072MessageAdapter(
         }
         val messageId = message.messageId ?: return
         if (!deduplicator.shouldEmit(messageId)) return
+        logger("message_captured type=1 outgoing=${message.isOutgoing} id=$messageId")
         runCatching { currentEmitter(message) }
             .onFailure { logger("message_emit_failed") }
     }

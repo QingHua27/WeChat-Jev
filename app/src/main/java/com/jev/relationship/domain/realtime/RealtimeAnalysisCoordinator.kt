@@ -1,5 +1,6 @@
 package com.jev.relationship.domain.realtime
 
+import com.jev.relationship.data.settings.RealtimeAssistantSettingsRepository
 import com.jev.relationship.domain.HistoryRepository
 import com.jev.relationship.domain.surface.AssistantSurfaceCoordinator
 import com.jev.relationship.ipc.MessageCaptureCoordinator
@@ -20,6 +21,7 @@ class RealtimeAnalysisCoordinator(
     private val analyzer: ConversationAnalyzer,
     private val historyRepository: HistoryRepository,
     private val surfaceCoordinator: AssistantSurfaceCoordinator,
+    private val settingsRepository: RealtimeAssistantSettingsRepository,
     private val scope: CoroutineScope,
 ) {
     companion object {
@@ -35,17 +37,17 @@ class RealtimeAnalysisCoordinator(
     val state: StateFlow<RealtimeAnalysisState> = _state.asStateFlow()
 
     fun setEnabled(value: Boolean) {
-        enabled = value
-        if (!value) {
-            stop()
-        } else if (collectorJob?.isActive != true) {
-            _state.value = RealtimeAnalysisState.WaitingForPermission
-        }
+        applyEnabled(value)
     }
 
     fun start() {
-        if (!enabled || collectorJob?.isActive == true) return
+        if (collectorJob?.isActive == true) return
         collectorJob = scope.launch {
+            launch {
+                settingsRepository.settings.collect { settings ->
+                    applyEnabled(settings.enabled)
+                }
+            }
             captureCoordinator.events.collect { message ->
                 if (!enabled) return@collect
                 val conversationId = message.conversationId
@@ -61,11 +63,24 @@ class RealtimeAnalysisCoordinator(
     fun stop() {
         collectorJob?.cancel()
         collectorJob = null
+        applyEnabled(false)
+    }
+
+    private fun applyEnabled(value: Boolean) {
+        enabled = value
+        if (!value) {
+            cancelPendingWork()
+            surfaceCoordinator.hide()
+            _state.value = RealtimeAnalysisState.Disabled
+        } else if (collectorJob?.isActive != true) {
+            _state.value = RealtimeAnalysisState.WaitingForPermission
+        }
+    }
+
+    private fun cancelPendingWork() {
         quietJobs.values.forEach(Job::cancel)
         quietJobs.clear()
         generations.clear()
-        surfaceCoordinator.hide()
-        _state.value = RealtimeAnalysisState.Disabled
     }
 
     private fun launchAnalysis(conversationId: String, generation: Long): Job = scope.launch {

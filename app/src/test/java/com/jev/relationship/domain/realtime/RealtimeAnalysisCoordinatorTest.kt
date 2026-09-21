@@ -9,6 +9,8 @@ import com.jev.relationship.core.model.ReplyTone
 import com.jev.relationship.domain.AnalysisOutput
 import com.jev.relationship.domain.HistoryRepository
 import com.jev.relationship.domain.surface.AssistantSurfaceCoordinator
+import com.jev.relationship.data.settings.RealtimeAssistantSettings
+import com.jev.relationship.data.settings.RealtimeAssistantSettingsRepository
 import com.jev.relationship.domain.surface.AssistantSurfaceState
 import com.jev.relationship.ipc.CapturedMessage
 import com.jev.relationship.ipc.IpcProtocol
@@ -20,6 +22,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
@@ -169,7 +172,20 @@ class RealtimeAnalysisCoordinatorTest {
         history: RecordingHistoryRepository = RecordingHistoryRepository(),
         surface: AssistantSurfaceCoordinator = AssistantSurfaceCoordinator(),
         scope: CoroutineScope,
-    ) = RealtimeAnalysisCoordinator(capture, analyzer, history, surface, scope)
+    ) = RealtimeAnalysisCoordinator(
+        captureCoordinator = capture,
+        analyzer = analyzer,
+        historyRepository = history,
+        surfaceCoordinator = surface,
+        settingsRepository = AlwaysEnabledSettingsRepository,
+        scope = scope,
+    )
+
+    private object AlwaysEnabledSettingsRepository : RealtimeAssistantSettingsRepository {
+        override val settings = flowOf(RealtimeAssistantSettings(enabled = true))
+
+        override suspend fun setEnabled(enabled: Boolean) = Unit
+    }
 
     private fun validMessage(conversationId: String, text: String, timestampMs: Long) = CapturedMessage(
         conversationId = conversationId,

@@ -1,0 +1,4 @@
+<resources>
+    <style name="Theme.Jev" parent="android:style/Theme.Material.Light.NoActionBar" />
+    <string name="accessibility_service_description">仅在你主动开启后读取当前聊天页面文字，用于生成本地分析预览；不会自动发送消息。</string>
+</resources>

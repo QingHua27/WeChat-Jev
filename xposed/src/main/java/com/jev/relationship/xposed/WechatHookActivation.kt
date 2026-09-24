@@ -8,7 +8,6 @@ object WechatHookActivation {
         packageName: String?,
         processName: String?,
         version: WechatVersion,
-        pairingToken: String?,
-    ): Boolean = !pairingToken.isNullOrBlank() &&
-        WechatHookGate.accepts(packageName, processName, version)
+        @Suppress("UNUSED_PARAMETER") pairingToken: String?,
+    ): Boolean = WechatHookGate.accepts(packageName, processName, version)
 }

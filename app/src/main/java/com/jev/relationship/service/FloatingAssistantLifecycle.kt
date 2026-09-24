@@ -9,7 +9,7 @@ internal class FloatingAssistantLifecycle(
 ) {
     private var active = false
 
-    fun onOverlayReady() {
+    fun onAssistantReady() {
         if (active) return
         active = true
         surfaceCoordinator.activate()

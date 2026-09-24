@@ -60,4 +60,13 @@ class MessageCaptureCoordinator(
         return Conversation(text = messages.joinToString("\n") { it.text })
     }
 
+    fun conversationThrough(target: CapturedMessage): Conversation? {
+        val messages = messagesByConversation[target.conversationId].orEmpty()
+        val index = messages.indexOf(target)
+        if (index < 0) return null
+        return Conversation(messages.take(index + 1).joinToString("\n") {
+            (if (it.isOutgoing || it.sender == MessageSender.SELF) "我：" else "对方：") + it.text
+        } + "\n\n当前待分析消息：" + target.text)
+    }
+
 }

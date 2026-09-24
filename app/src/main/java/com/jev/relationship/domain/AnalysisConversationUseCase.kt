@@ -30,7 +30,8 @@ class AnalysisConversationUseCase @Inject constructor(
             observations = observations,
         )
         val analysis = analyzer.analyze(context)
-        val replies = replyGenerator.generate(context, analysis)
+        val replies = if (analysis.stopAfterAnalysis || analysis.detailed.failureReason != null) emptyList()
+            else replyGenerator.generate(context, analysis)
         return AnalysisOutput(analysis = analysis, replies = replies)
     }
 }

@@ -31,3 +31,20 @@ class LibXposedAfterHookInstaller(
         return WechatHookHandle { handle.unhook() }
     }
 }
+
+fun interface WechatUiHookInstaller {
+    fun install(target: Method, after: (Any?, Any?) -> Unit): WechatHookHandle
+}
+
+class LibXposedUiHookInstaller(
+    private val xposed: XposedInterface,
+) : WechatUiHookInstaller {
+    override fun install(target: Method, after: (Any?, Any?) -> Unit): WechatHookHandle {
+        val handle = xposed.hook(target).intercept { chain: Chain ->
+            val result = chain.proceed()
+            runCatching { after(chain.thisObject, result) }
+            result
+        }
+        return WechatHookHandle { handle.unhook() }
+    }
+}

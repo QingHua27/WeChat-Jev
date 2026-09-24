@@ -13,19 +13,22 @@ class Wechat072MessageAdapter(
         Class.forName(name, false, loader)
     },
     private val logger: (String) -> Unit = {},
+    private val onHistoryInvalidated: () -> Unit = {},
 ) : WechatMessageHook {
     constructor(
         module: XposedInterface,
         deduplicator: WechatMessageDeduplicator = WechatMessageDeduplicator(),
         logger: (String) -> Unit = {},
+        onHistoryInvalidated: () -> Unit = {},
     ) : this(
         installer = LibXposedAfterHookInstaller(module),
         deduplicator = deduplicator,
         logger = logger,
+        onHistoryInvalidated = onHistoryInvalidated,
     )
 
     private var installed = false
-    private var hookHandle: WechatHookHandle? = null
+    private val hookHandles = mutableListOf<WechatHookHandle>()
     private var accessors: Accessors? = null
     private var emitter: ((CapturedMessage) -> Unit)? = null
 
@@ -61,9 +64,20 @@ class Wechat072MessageAdapter(
             logger("message_class_hierarchy_unavailable")
             return HookInstallResult.FAILED
         }
-        val targetMethod = runCatching {
-            storageClass.getDeclaredMethod("Cb", messageClass)
+        val targetMethods = runCatching {
+            storageClass.declaredMethods
+                .filter { method ->
+                    method.parameterTypes.firstOrNull() == messageClass
+                }
+                .sortedWith(
+                    compareByDescending<Method> { it.name == "Cb" }
+                        .thenBy { it.name },
+                )
         }.getOrElse {
+            logger("target_method_unavailable")
+            return HookInstallResult.FAILED
+        }
+        if (targetMethods.isEmpty()) {
             logger("target_method_unavailable")
             return HookInstallResult.TARGET_METHOD_UNAVAILABLE
         }
@@ -82,9 +96,11 @@ class Wechat072MessageAdapter(
             return HookInstallResult.FAILED
         }
 
-        val handle = runCatching {
-            installer.install(targetMethod) { rawMessage ->
-                handleCapturedMessage(rawMessage, resolvedAccessors)
+        val handles = runCatching {
+            targetMethods.map { targetMethod ->
+                installer.install(targetMethod) { rawMessage ->
+                    handleCapturedMessage(rawMessage, resolvedAccessors)
+                }
             }
         }.getOrElse {
             logger("hook_install_failed")
@@ -93,17 +109,17 @@ class Wechat072MessageAdapter(
 
         accessors = resolvedAccessors
         emitter = emit
-        hookHandle = handle
+        hookHandles += handles
         installed = true
-        logger("hook_installed")
+        logger("hook_installed methods=${targetMethods.size}")
         return HookInstallResult.INSTALLED
     }
 
     @Synchronized
     override fun uninstall() {
-        runCatching { hookHandle?.unhook() }
+        runCatching { hookHandles.forEach(WechatHookHandle::unhook) }
             .onFailure { logger("hook_uninstall_failed") }
-        hookHandle = null
+        hookHandles.clear()
         accessors = null
         emitter = null
         installed = false
@@ -116,6 +132,11 @@ class Wechat072MessageAdapter(
         }.getOrElse {
             logger("message_read_failed")
             return
+        }
+        if (snapshot.type == 10000 || snapshot.type == 10002) {
+            if (snapshot.content.orEmpty().contains("撤回") || snapshot.content.orEmpty().contains("revokemsg")) {
+                runCatching(onHistoryInvalidated)
+            }
         }
         val message = runCatching { WechatMessageMapper.map(snapshot) }
             .getOrElse {

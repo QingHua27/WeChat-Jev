@@ -8,7 +8,7 @@ import org.junit.Test
 
 class FloatingAssistantServiceLifecycleTest {
     @Test
-    fun `overlay ready activates shared surface and realtime runtime`() {
+    fun `assistant ready activates shared surface and realtime runtime`() {
         val surface = AssistantSurfaceCoordinator()
         var realtimeStarted = false
         val lifecycle = FloatingAssistantLifecycle(
@@ -17,7 +17,7 @@ class FloatingAssistantServiceLifecycleTest {
             onRealtimeStop = {},
         )
 
-        lifecycle.onOverlayReady()
+        lifecycle.onAssistantReady()
 
         assertEquals(AssistantSurfaceState.Ready, surface.state.value)
         assertTrue(realtimeStarted)
@@ -33,7 +33,7 @@ class FloatingAssistantServiceLifecycleTest {
             onRealtimeStop = { realtimeStopped = true },
         )
 
-        lifecycle.onOverlayReady()
+        lifecycle.onAssistantReady()
         lifecycle.onDestroy()
 
         assertEquals(AssistantSurfaceState.Hidden, surface.state.value)

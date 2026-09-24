@@ -2,7 +2,27 @@
 
 Jev is an Android Compose application for structured chat analysis and reply assistance.
 
+## Compatibility
+
+The current WeChat Xposed integration supports **WeChat 8.0.72 (versionCode 3085) only**, in the main process `com.tencent.mm`. Other WeChat versions have not been adapted or verified and are unsupported; the integration intentionally stays inactive on them. Updating or downgrading WeChat may therefore disable chat capture and embedded analysis until a separate version adapter is added.
+
+当前 Xposed 集成**仅适配微信 8.0.72（versionCode 3085）**。其他微信版本尚未适配、未验证且不支持；模块会在这些版本上保持停用。
+
 ## Current MVP
+
+### WeChat reference panels (2026-09-22)
+
+The supported WeChat 8.0.72 integration now displays compact light-gray `Jev:` panels directly below incoming text bubbles. Outgoing messages are retained as preceding context and never trigger or receive analysis panels. Voice, images and call records are not analyzed.
+
+The TypeSafe request batches emotion/intent/risk with a bounded question catalog for memory, whether to answer immediately, trust, communication urgency, current needs, suitable actions and whether tension has been resolved. Panels select the relevant questions for each message. Percentages come from `probabilities` and `noul`, not distribution `confidence`, and are not hardcoded to the reference image. A strong resolved judgment skips additional understanding/reply model calls for that analysis. Unconfigured providers show a labeled local demo.
+
+Both paths rebuild context from the complete local text history for the current WeChat conversation, ending at the analyzed incoming message. Outgoing messages provide context only. Recalled system notices and recalled records are ignored, and a recall clears current cards. The supported custom WeChat `MMNeat7extView` is matched by exact normalized text hash. Same-row avatar positions distinguish wide outgoing bubbles; unmatched text is never attached to an arbitrary row. If local history cannot be read or the chat identity changes, analysis stops without substituting a visible fragment. Disabling analysis or leaving a visible conversation sends an explicit IPC clear command. WeChat's own theme, navigation and composer remain native to the user's phone.
+
+See [reference alignment and verification](docs/reference-parity-progress.md). Build/install both APKs together for the new optional section fields and clear command.
+
+Analysis cards are backed by an encrypted local result cache keyed by WeChat's stable message ID. When a chat opens, retained incoming text messages are backfilled from newest to oldest; cached results are reused and uncached messages are analyzed one at a time. Cards are sent to WeChat as their message rows become visible, and scrolling back restores them from cache without another model request. Outgoing messages supply context only. A compact `Jev` switch sits beside the WeChat chat title's overflow button and enables/disables analysis for that conversation. The supported Xposed path reads the current chat's visible rows and authorized local history inside WeChat, so these cards do not require re-enabling Android Accessibility after a reboot. LSPosed must still have the module enabled and scoped to WeChat, and this adapter is version-gated to WeChat 8.0.72 (3085).
+
+Visible bubble snapshots carry the local message ID from the WeChat row's bound record. This disambiguates repeated text in group chats, gives the cache a persistent key, and lets the card reattach synchronously when WeChat recycles a row. Group history entries with WeChat's sender prefix are matched to the displayed bubble text.
 
 - Paste or import a `.txt` transcript.
 - Confirm before any configured remote provider receives the transcript.
@@ -32,11 +52,11 @@ The APK is written to `app/build/outputs/apk/debug/app-debug.apk`.
 
 ## Jev provider contract
 
-For structured analysis, configure the TypeSafe API base URL (normally `https://api.typesafe.ai/v1/`) and the `jev-latest` model. The app calls `POST /systemone` with three typed questions: dominant emotion (`Choice`), main communication intent (`Choice`), and communication risk (`Score`). It composes the returned decisions into the app's `AnalysisResult`, including a bounded 0–10 risk value and a local safety-aware suggestion.
+For structured analysis, configure the TypeSafe API base URL (normally `https://api.typesafe.ai/v1/`) and the `jev-latest` model. The app calls `POST /systemone` with emotion and intent (`Choice`), communication risk (`Score`), and the bounded conversation question catalog described above (`Choice` / `Noul`). It composes the returned decisions into `AnalysisResult`, including a bounded 0–10 risk value and the relevant card sections.
 
 Jev is a decision model and does not generate prose replies. Reply generation is an optional OpenAI-compatible `POST /chat/completions` adapter using the same configured endpoint when a gateway supports both contracts; if it does not, the app falls back to deterministic local reply suggestions.
 
-The TypeSafe request shape is:
+The following abbreviated request shows the base questions; the current implementation also includes the conversation question catalog:
 
 ```json
 {
@@ -66,7 +86,7 @@ Optional reply content:
 
 ## Opt-in assistant architecture
 
-The app now includes disabled-by-default `JevAccessibilityService` and `FloatingAssistantService` declarations. The accessibility parser only accepts visible text from the configured WeChat package after the user enables the service. The floating shell is read-only and stops when overlay permission is missing; neither service sends messages.
+The app retains disabled-by-default `JevAccessibilityService` and `FloatingAssistantService` declarations for legacy compatibility. The current embedded-card path uses the paired Xposed module and does not depend on Accessibility. The floating shell is read-only; neither service sends messages.
 
 ## Phase 3: LSPosed/Xposed IPC bridge
 

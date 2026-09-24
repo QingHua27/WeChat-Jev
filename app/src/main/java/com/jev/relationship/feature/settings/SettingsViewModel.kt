@@ -4,11 +4,14 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.jev.relationship.data.settings.ProviderSettings
+import com.jev.relationship.data.settings.JevProviderDefaults
+import com.jev.relationship.data.settings.ReplyModelPreset
 import com.jev.relationship.data.settings.RealtimeAssistantSettings
 import com.jev.relationship.data.settings.RealtimeAssistantSettingsRepository
 import com.jev.relationship.data.settings.SettingsRepository
 import com.jev.relationship.data.settings.XposedIntegrationRepository
 import com.jev.relationship.data.settings.XposedIntegrationSettings
+import com.jev.relationship.data.settings.XposedPairingTokenGenerator
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -20,7 +23,11 @@ import kotlinx.coroutines.launch
 
 data class SettingsUiState(
     val settings: ProviderSettings = ProviderSettings(),
+    val replyModelPresets: List<ReplyModelPreset> = emptyList(),
+    val presetMessage: String? = null,
     val xposed: XposedIntegrationSettings = XposedIntegrationSettings(),
+    val pairingInProgress: Boolean = false,
+    val pairingError: String? = null,
     val realtime: RealtimeAssistantSettings = RealtimeAssistantSettings(),
     val showRealtimeConsent: Boolean = false,
     val saved: Boolean = false,
@@ -36,11 +43,17 @@ class SettingsViewModel @Inject constructor(
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(SettingsUiState())
     val uiState: StateFlow<SettingsUiState> = _uiState.asStateFlow()
+    private var pendingPairingToken: String? = null
 
     init {
         viewModelScope.launch {
             repository.providerSettings.collectLatest { settings ->
                 _uiState.update { it.copy(settings = settings, error = null) }
+            }
+        }
+        viewModelScope.launch {
+            repository.replyModelPresets.collectLatest { presets ->
+                _uiState.update { it.copy(replyModelPresets = presets) }
             }
         }
         viewModelScope.launch {
@@ -55,11 +68,7 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    fun updateBaseUrl(value: String) = updateSettings { it.copy(settings = it.settings.copy(baseUrl = value), saved = false) }
-
     fun updateApiKey(value: String) = updateSettings { it.copy(settings = it.settings.copy(apiKey = value), saved = false) }
-
-    fun updateModel(value: String) = updateSettings { it.copy(settings = it.settings.copy(model = value), saved = false) }
 
     fun updateReplyBaseUrl(value: String) = updateSettings {
         it.copy(settings = it.settings.copy(replyBaseUrl = value), saved = false)
@@ -73,19 +82,87 @@ class SettingsViewModel @Inject constructor(
         it.copy(settings = it.settings.copy(replyModel = value), saved = false)
     }
 
-    fun enableXposedIntegration() {
+    fun selectReplyModelPreset(id: String) {
+        val preset = _uiState.value.replyModelPresets.firstOrNull { it.id == id } ?: return
+        _uiState.update { state ->
+            state.copy(
+                settings = state.settings.copy(
+                    replyBaseUrl = preset.settings.baseUrl,
+                    replyApiKey = preset.settings.apiKey,
+                    replyModel = preset.settings.model,
+                ),
+                saved = false,
+                presetMessage = "已切换到 ${preset.name}",
+            )
+        }
+        save()
+    }
+
+    fun saveReplyModelPreset(name: String) {
+        val settings = _uiState.value.settings.replySettings()
         viewModelScope.launch {
-            xposedRepository.rotatePairingToken()
+            runCatching { repository.saveReplyModelPreset(name, settings) }
+                .onSuccess {
+                    _uiState.update { state -> state.copy(presetMessage = "已保存预设：${name.trim()}", error = null) }
+                }
+                .onFailure { error ->
+                    _uiState.update { state ->
+                        state.copy(error = error.message ?: "保存预设失败", presetMessage = null)
+                    }
+                }
         }
     }
 
-    fun rotateXposedPairingToken() {
+    fun deleteReplyModelPreset(id: String) {
         viewModelScope.launch {
-            xposedRepository.rotatePairingToken()
+            runCatching { repository.deleteReplyModelPreset(id) }
+                .onSuccess { _uiState.update { it.copy(presetMessage = "已删除模型预设", error = null) } }
+                .onFailure { error ->
+                    _uiState.update { it.copy(error = error.message ?: "删除预设失败", presetMessage = null) }
+                }
+        }
+    }
+
+    fun beginXposedPairing(): String {
+        val token = XposedPairingTokenGenerator.generate()
+        pendingPairingToken = token
+        _uiState.update { it.copy(pairingInProgress = true, pairingError = null) }
+        return token
+    }
+
+    fun completeXposedPairing(token: String) {
+        if (pendingPairingToken != token) return
+        viewModelScope.launch {
+            runCatching { xposedRepository.activateWithPairingToken(token) }
+                .onSuccess {
+                    pendingPairingToken = null
+                    _uiState.update { it.copy(pairingInProgress = false, pairingError = null) }
+                }
+                .onFailure { error ->
+                    pendingPairingToken = null
+                    _uiState.update {
+                        it.copy(
+                            pairingInProgress = false,
+                            pairingError = error.message ?: "保存配对信息失败，请重试。",
+                        )
+                    }
+                }
+        }
+    }
+
+    fun failXposedPairing(message: String) {
+        pendingPairingToken = null
+        _uiState.update {
+            it.copy(
+                pairingInProgress = false,
+                pairingError = message.ifBlank { "LSPosed 配对失败，请重试。" },
+            )
         }
     }
 
     fun disableXposedIntegration() {
+        pendingPairingToken = null
+        _uiState.update { it.copy(pairingInProgress = false, pairingError = null) }
         viewModelScope.launch {
             xposedRepository.disable()
         }
@@ -114,13 +191,6 @@ class SettingsViewModel @Inject constructor(
 
     fun save() {
         val settings = _uiState.value.settings
-        if (settings.baseUrl.isNotBlank()) {
-            runCatching { settings.normalizedBaseUrl() }
-                .onFailure { error ->
-                    _uiState.update { it.copy(error = error.message ?: "URL 无效") }
-                    return
-                }
-        }
         if (settings.replyBaseUrl.isNotBlank()) {
             runCatching { settings.replySettings().normalizedBaseUrl() }
                 .onFailure { error ->
@@ -131,9 +201,9 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             repository.saveProviderSettings(
                 settings.copy(
-                    baseUrl = settings.baseUrl.trim(),
+                    baseUrl = JevProviderDefaults.BASE_URL,
                     apiKey = settings.apiKey.trim(),
-                    model = settings.model.trim().ifEmpty { "jev-latest" },
+                    model = JevProviderDefaults.MODEL,
                     replyBaseUrl = settings.replyBaseUrl.trim(),
                     replyApiKey = settings.replyApiKey.trim(),
                     replyModel = settings.replyModel.trim(),

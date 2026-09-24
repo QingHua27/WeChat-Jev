@@ -1,0 +1,4 @@
+<resources>
+    <string name="module_name">Jev 微信消息桥接</string>
+    <string name="module_description">仅在用户授权后，将微信消息交给 Jev 主 App；不会自动发送消息。</string>
+</resources>

@@ -1,0 +1,25 @@
+.gradle/
+.idea/
+local.properties
+build/
+*/build/
+captures/
+.externalNativeBuild/
+.cxx/
+*.iml
+*.jks
+*.keystore
+
+# Local builds and device/debug captures
+/.analysis/
+/.api101tmp/
+/.build-settings-ui/
+/.gradle/
+/.kotlin/
+/build/
+/*.png
+/*.jpg
+/*.jpeg
+/*.xml
+/*.bin
+/*.jar

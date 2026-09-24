@@ -24,7 +24,7 @@ object WechatMessageMapper {
 
         val conversationId = snapshot.talker?.trim().orEmpty()
         val text = snapshot.content?.trim().orEmpty()
-        if (conversationId.isBlank() || text.isBlank()) return null
+        if (conversationId.isBlank() || !com.jev.relationship.ipc.ChatTextPolicy.isDialogue(text)) return null
 
         val messageNumericId = when {
             snapshot.localMessageId > 0L -> snapshot.localMessageId

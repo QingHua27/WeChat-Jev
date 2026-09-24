@@ -2,8 +2,11 @@ package com.jev.relationship.feature.settings
 
 import androidx.lifecycle.SavedStateHandle
 import com.jev.relationship.data.settings.ProviderSettings
+import com.jev.relationship.data.settings.JevProviderDefaults
 import com.jev.relationship.data.settings.RealtimeAssistantSettings
 import com.jev.relationship.data.settings.RealtimeAssistantSettingsRepository
+import com.jev.relationship.data.settings.OpenAiProviderSettings
+import com.jev.relationship.data.settings.ReplyModelPreset
 import com.jev.relationship.data.settings.SettingsRepository
 import com.jev.relationship.data.settings.XposedIntegrationRepository
 import com.jev.relationship.data.settings.XposedIntegrationSettings
@@ -18,6 +21,8 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -42,19 +47,41 @@ class SettingsViewModelTest {
             SavedStateHandle(),
         )
 
-        viewModel.updateBaseUrl(" https://api.example.com/v1 ")
         viewModel.updateApiKey(" secret ")
-        viewModel.updateModel(" model-x ")
         viewModel.save()
         advanceUntilIdle()
 
-        assertEquals("https://api.example.com/v1", repository.saved.baseUrl)
+        assertEquals(JevProviderDefaults.BASE_URL, repository.saved.baseUrl)
         assertEquals("secret", repository.saved.apiKey)
+        assertEquals(JevProviderDefaults.MODEL, repository.saved.model)
         assertTrue(viewModel.uiState.value.saved)
     }
 
     @Test
-    fun enablingXposedIntegrationExposesPairingToken() = runTest {
+    fun selectingReplyPresetImmediatelyPersistsItAsTheActiveConfiguration() = runTest {
+        val preset = ReplyModelPreset(
+            id = "preset-1",
+            name = "百炼 Flash",
+            settings = OpenAiProviderSettings("https://dashscope.aliyuncs.com/compatible-mode/v1/", "key", "qwen3.8-flash"),
+        )
+        val repository = RecordingSettingsRepository(presets = listOf(preset))
+        val viewModel = SettingsViewModel(
+            repository,
+            RecordingXposedRepository(),
+            RecordingRealtimeRepository(),
+            SavedStateHandle(),
+        )
+
+        viewModel.selectReplyModelPreset(preset.id)
+        advanceUntilIdle()
+
+        assertEquals(preset.settings, repository.saved.replySettings())
+        assertEquals("qwen3.8-flash", viewModel.uiState.value.settings.replyModel)
+        assertTrue(viewModel.uiState.value.saved)
+    }
+
+    @Test
+    fun pairingIsNotPersistedUntilRemoteProvisioningSucceeds() = runTest {
         val xposedRepository = RecordingXposedRepository()
         val viewModel = SettingsViewModel(
             RecordingSettingsRepository(),
@@ -63,11 +90,45 @@ class SettingsViewModelTest {
             SavedStateHandle(),
         )
 
-        viewModel.enableXposedIntegration()
+        val token = viewModel.beginXposedPairing()
         advanceUntilIdle()
 
+        assertTrue(viewModel.uiState.value.pairingInProgress)
+        assertFalse(viewModel.uiState.value.xposed.enabled)
+        assertNull(xposedRepository.savedToken)
+
+        viewModel.completeXposedPairing(token)
+        advanceUntilIdle()
+
+        assertEquals(token, xposedRepository.savedToken)
         assertTrue(viewModel.uiState.value.xposed.enabled)
-        assertEquals("generated-token", viewModel.uiState.value.xposed.pairingToken)
+        assertFalse(viewModel.uiState.value.pairingInProgress)
+        assertNull(viewModel.uiState.value.pairingError)
+    }
+
+    @Test
+    fun pairingFailureLeavesIntegrationDisabledAndRetryStartsFreshPairing() = runTest {
+        val xposedRepository = RecordingXposedRepository()
+        val viewModel = SettingsViewModel(
+            RecordingSettingsRepository(),
+            xposedRepository,
+            RecordingRealtimeRepository(),
+            SavedStateHandle(),
+        )
+
+        viewModel.beginXposedPairing()
+        viewModel.failXposedPairing("LSPosed service unavailable")
+        advanceUntilIdle()
+
+        assertFalse(viewModel.uiState.value.xposed.enabled)
+        assertFalse(viewModel.uiState.value.pairingInProgress)
+        assertEquals("LSPosed service unavailable", viewModel.uiState.value.pairingError)
+        assertNull(xposedRepository.savedToken)
+
+        val retryToken = viewModel.beginXposedPairing()
+        assertFalse(retryToken.isBlank())
+        assertTrue(viewModel.uiState.value.pairingInProgress)
+        assertNull(viewModel.uiState.value.pairingError)
     }
 
     @Test
@@ -131,11 +192,15 @@ class SettingsViewModelTest {
         assertTrue(!viewModel.uiState.value.realtime.enabled)
     }
 
-    private class RecordingSettingsRepository : SettingsRepository {
+    private class RecordingSettingsRepository(
+        presets: List<ReplyModelPreset> = emptyList(),
+    ) : SettingsRepository {
         private val state = MutableStateFlow(ProviderSettings())
+        private val presetsState = MutableStateFlow(presets)
         var saved = ProviderSettings()
 
         override val providerSettings: Flow<ProviderSettings> = state
+        override val replyModelPresets: Flow<List<ReplyModelPreset>> = presetsState
 
         override suspend fun currentProviderSettings(): ProviderSettings = state.value
 
@@ -143,24 +208,31 @@ class SettingsViewModelTest {
             saved = settings
             state.value = settings
         }
+
+        override suspend fun saveReplyModelPreset(name: String, settings: OpenAiProviderSettings) {
+            val existing = presetsState.value.firstOrNull { it.name.equals(name.trim(), ignoreCase = true) }
+            val preset = ReplyModelPreset(existing?.id ?: "preset-${presetsState.value.size + 1}", name.trim(), settings)
+            presetsState.value = (presetsState.value.filterNot { it.id == preset.id } + preset)
+        }
+
+        override suspend fun deleteReplyModelPreset(id: String) {
+            presetsState.value = presetsState.value.filterNot { it.id == id }
+        }
     }
 
     private class RecordingXposedRepository(
         initial: XposedIntegrationSettings = XposedIntegrationSettings(),
     ) : XposedIntegrationRepository {
         private val state = MutableStateFlow(initial)
+        var savedToken: String? = null
 
         override val settings: Flow<XposedIntegrationSettings> = state
 
         override suspend fun current(): XposedIntegrationSettings = state.value
 
-        override suspend fun setEnabled(enabled: Boolean) {
-            state.value = state.value.copy(enabled = enabled)
-        }
-
-        override suspend fun rotatePairingToken(): String {
-            state.value = XposedIntegrationSettings(enabled = true, pairingToken = "generated-token")
-            return "generated-token"
+        override suspend fun activateWithPairingToken(token: String) {
+            savedToken = token
+            state.value = XposedIntegrationSettings(enabled = true, pairingToken = token)
         }
 
         override suspend fun disable() {

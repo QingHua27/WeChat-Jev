@@ -21,9 +21,9 @@ class WechatHookActivationTest {
     }
 
     @Test
-    fun `rejects missing or blank token`() {
-        assertFalse(WechatHookActivation.shouldInstall("com.tencent.mm", "com.tencent.mm", supportedVersion, null))
-        assertFalse(WechatHookActivation.shouldInstall("com.tencent.mm", "com.tencent.mm", supportedVersion, "  "))
+    fun `installs supported hooks before automatic credentials are ready`() {
+        assertTrue(WechatHookActivation.shouldInstall("com.tencent.mm", "com.tencent.mm", supportedVersion, null))
+        assertTrue(WechatHookActivation.shouldInstall("com.tencent.mm", "com.tencent.mm", supportedVersion, "  "))
     }
 
     @Test

@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "ok": true,
+  "command": "deliver",
+  "type": "architecture",
+  "input": "D:\\Jev\\docs\\diagrams\\jev-current-analysis.architecture.json",
+  "output": "D:\\Jev\\docs\\diagrams\\jev-current-analysis.html",
+  "specification": {
+    "sha256": "dd4287d89523fbfbdf6c3b3cc484ac563e8f24c404032ddc6bace62036e2cbd9",
+    "bytes": 5728
+  },
+  "artifact": {
+    "sha256": "d6eb441083d51a0daef936ee6aaddb5ab0b83d9182e67b750f89c286abc39644",
+    "bytes": 715687
+  },
+  "validation": {
+    "checksPassed": 9,
+    "checkCount": 9,
+    "compositionProfile": "showcase",
+    "compositionStatus": "pass",
+    "errors": 0,
+    "warnings": 0
+  },
+  "diagram_type": "architecture",
+  "visual_review": "passed",
+  "correction_rounds": 1,
+  "evidence": "jev-current-analysis.evidence.md"
+}

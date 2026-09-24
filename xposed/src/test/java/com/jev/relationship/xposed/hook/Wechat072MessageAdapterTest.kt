@@ -86,6 +86,25 @@ class Wechat072MessageAdapterTest {
     }
 
     @Test
+    fun `falls back to another message writer when Cb is absent`() {
+        val installer = RecordingAfterHookInstaller()
+        val adapter = adapter(installer, resolver = { name, loader ->
+            when (name) {
+                "com.tencent.mm.storage.f9" -> FixtureMessage::class.java
+                "com.tencent.mm.storage.h9" -> FixtureStorageWithAlternateWriter::class.java
+                "sm.b8" -> FixtureBaseMessage::class.java
+                else -> throw ClassNotFoundException(name)
+            }
+        })
+
+        assertEquals(
+            HookInstallResult.INSTALLED,
+            adapter.installForClassLoader(testClassLoader) { },
+        )
+        assertEquals("insert", installer.target?.name)
+    }
+
+    @Test
     fun `filters non text and invalid ids before emission`() {
         val installer = RecordingAfterHookInstaller()
         val emittedCount = AtomicInteger()
@@ -99,6 +118,22 @@ class Wechat072MessageAdapterTest {
         installer.fireAfterOriginal(FixtureMessage(msgId = 0L, msgSvrId = -1L))
 
         assertEquals(0, emittedCount.get())
+    }
+
+    @Test
+    fun `recalled system message invalidates history and never emits analysis input`() {
+        val installer = RecordingAfterHookInstaller()
+        var invalidations = 0
+        var emitted = 0
+        val adapter = Wechat072MessageAdapter(
+            installer = installer,
+            classResolver = ::resolveFixture,
+            onHistoryInvalidated = { invalidations++ },
+        )
+        assertEquals(HookInstallResult.INSTALLED, adapter.installForClassLoader(testClassLoader) { emitted++ })
+        installer.fireAfterOriginal(FixtureMessage(type = 10000, content = "<sysmsg type=\"revokemsg\">"))
+        assertEquals(1, invalidations)
+        assertEquals(0, emitted)
     }
 
     @Test
@@ -232,6 +267,10 @@ data class FixtureMessage(
 
 class FixtureStorage {
     fun Cb(message: FixtureMessage): Long = message.getMsgId()
+}
+
+class FixtureStorageWithAlternateWriter {
+    fun insert(message: FixtureMessage): Long = message.getMsgId()
 }
 
 class FixtureStorageWithoutTarget

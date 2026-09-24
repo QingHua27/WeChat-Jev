@@ -7,6 +7,10 @@
 
 # Loaded by LSPosed from META-INF rather than an application call site.
 -keep class com.jev.relationship.xposed.JevXposedModule { *; }
+
+# SQLCipher JNI resolves Java fields/methods by their original names, including
+# SQLiteDatabase.mNativeHandle during library initialization.
+-keep class net.sqlcipher.** { *; }
 -dontwarn io.github.libxposed.annotation.**
 -adaptresourcefilecontents META-INF/xposed/java_init.list
 -keep,allowoptimization,allowobfuscation public class * extends io.github.libxposed.api.XposedModule {

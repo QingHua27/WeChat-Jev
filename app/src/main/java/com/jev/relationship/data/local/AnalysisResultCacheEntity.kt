@@ -6,11 +6,12 @@ import com.google.gson.Gson
 import com.google.gson.JsonParser
 import com.jev.relationship.ipc.IpcAnalysisResult
 
-@Entity(tableName = "message_analysis_cache")
+@Entity(tableName = "message_analysis_cache", indices = [androidx.room.Index(value = ["conversationHash", "localMessageId"])])
 data class AnalysisResultCacheEntity(
     @PrimaryKey val localMessageId: Long,
     val resultJson: String,
     val cachedAt: Long,
+    @androidx.room.ColumnInfo(defaultValue = "''") val conversationHash: String = "",
 ) {
     fun toResult(gson: Gson = Gson()): IpcAnalysisResult =
         gson.fromJson(resultJson, IpcAnalysisResult::class.java)
@@ -25,6 +26,6 @@ data class AnalysisResultCacheEntity(
         fun from(messageId: Long, result: IpcAnalysisResult, gson: Gson = Gson()) =
             AnalysisResultCacheEntity(messageId, gson.toJson(gson.toJsonTree(result).asJsonObject.apply {
                 addProperty(CONTEXT_VERSION, 1)
-            }), System.currentTimeMillis())
+            }), System.currentTimeMillis(), result.conversationHash)
     }
 }

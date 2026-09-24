@@ -63,6 +63,8 @@ class RealtimeAnalysisCoordinator(
     private val disabledConversationKeys = mutableSetOf<String>()
     private var visibleGeneration = 0L
     private var enabled = false
+    private var fastCacheDisplay = true
+    private val cachePreloader = ConversationCachePreloader(analysisResultCache, analysisResultSink, scope)
     private val replyTargets = mutableMapOf<String, String>()
     private val latestReplies = mutableMapOf<String, com.jev.relationship.ipc.IpcReplySuggestion>()
 
@@ -79,6 +81,11 @@ class RealtimeAnalysisCoordinator(
                 settingsRepository.settings.collect { settings ->
                     logStatus("settings enabled=${settings.enabled}")
                     applyEnabled(settings.enabled)
+                    fastCacheDisplay = settings.fastCacheDisplay
+                    analysisResultSink?.setFastCacheDisplay(fastCacheDisplay)
+                    if (enabled) visibleConversationKey?.takeIf(::isConversationAnalysisEnabled)?.let {
+                        cachePreloader.preload(it, fastCacheDisplay)
+                    }
                 }
             }
             captureCoordinator.events.collect { message ->
@@ -131,8 +138,10 @@ class RealtimeAnalysisCoordinator(
         }
         if (localHistory != null) {
             submitHistoryBackfillSnapshot(snapshot)
+            cachePreloader.preload(snapshot.conversationKey, fastCacheDisplay)
             return
         }
+        cachePreloader.preload(snapshot.conversationKey, fastCacheDisplay)
         val messages = snapshot.messages
             .filter { message -> !message.isOutgoing && com.jev.relationship.ipc.ChatTextPolicy.isDialogue(message.text) }
             .ifEmpty {
@@ -283,6 +292,7 @@ class RealtimeAnalysisCoordinator(
     }
 
     fun leaveVisibleConversation() {
+        cachePreloader.cancel()
         if (visibleConversationKey == null) return
         visibleGeneration += 1L
         visibleConversationJob?.cancel()
@@ -307,6 +317,7 @@ class RealtimeAnalysisCoordinator(
      * already attached to their message rows visible during refresh.
      */
     fun invalidateVisibleViewport() {
+        cachePreloader.cancel()
         if (visibleConversationKey == null) return
         visibleGeneration += 1L
         visibleConversationJob?.cancel()
@@ -334,6 +345,7 @@ class RealtimeAnalysisCoordinator(
         val keys = setOf(conversationId.trim(), title.trim()).filter(String::isNotEmpty)
         if (enabled) disabledConversationKeys.removeAll(keys) else disabledConversationKeys.addAll(keys)
         if (!enabled) {
+            cachePreloader.cancel()
             regenerationJobs[conversationId]?.cancel()
             quietJobs.remove(conversationId)?.cancel()
             generations[conversationId] = (generations[conversationId] ?: 0L) + 1L
@@ -373,6 +385,7 @@ class RealtimeAnalysisCoordinator(
     }
 
     private fun cancelPendingWork() {
+        cachePreloader.cancel()
         regenerationJobs.values.toList().forEach(Job::cancel)
         quietJobs.values.forEach(Job::cancel)
         quietJobs.clear()
@@ -408,13 +421,13 @@ class RealtimeAnalysisCoordinator(
         scope.launch {
             if (!enabled || !isConversationAnalysisEnabled(conversationId) || visibleConversationKey != conversationId) return@launch
             latestReplies[conversationId]?.let { analysisResultSink?.publishReplySuggestion(it) }
-            visible.values.forEach { message ->
-                if (!enabled || !isConversationAnalysisEnabled(conversationId) || visibleConversationKey != conversationId) return@launch
-                val messageId = "wechat-8.0.72-${message.localMessageId}"
-                val cached = analysisResultCache?.find(messageId) ?: return@forEach
-                if (enabled && isConversationAnalysisEnabled(conversationId) && visibleConversationKey == conversationId) {
-                    analysisResultSink?.publish(cached.forVisibleMessage(conversationId, message))
+            val cached = analysisResultCache?.findAll(visible.keys.map { "wechat-8.0.72-$it" }).orEmpty()
+            // The query can suspend while the user switches chats; check again before publishing.
+            if (enabled && isConversationAnalysisEnabled(conversationId) && visibleConversationKey == conversationId) {
+                val results = visible.values.mapNotNull { message ->
+                    cached["wechat-8.0.72-${message.localMessageId}"]?.forVisibleMessage(conversationId, message)
                 }
+                if (results.isNotEmpty()) analysisResultSink?.publishAll(results)
             }
         }
 
@@ -456,22 +469,37 @@ class RealtimeAnalysisCoordinator(
                     .toSet()
                 historySweepMessageIds = historySweepMessageIds + sweepMessageIds
                 sweepReady.complete(sweepMessageIds)
+                val cachedTargets = analysisResultCache?.findAll(
+                    sweepMessageIds.map { "wechat-8.0.72-$it" },
+                ).orEmpty()
+                if (!isHistorySweepCurrent(sweepKey)) return@launch
+                val visibleCached = visibleHistoryMessages.mapNotNull { (id, message) ->
+                    cachedTargets["wechat-8.0.72-$id"]?.forVisibleMessage(sweepKey, message)
+                }
+                if (visibleCached.isNotEmpty()) analysisResultSink?.publishAll(visibleCached)
+                if (latestIncoming >= 0) {
+                    cachedTargets["wechat-8.0.72-${history[latestIncoming].id}"]?.let { publishReply(sweepKey, it) }
+                }
                 for (index in targetIndices.asReversed()) {
                     if (!isHistorySweepCurrent(sweepKey)) return@launch
                     val record = history[index]
                     if (record.isOutgoing || !com.jev.relationship.ipc.ChatTextPolicy.isDialogue(record.text)) continue
                     val messageId = "wechat-8.0.72-${record.id}"
-                    val cached = analysisResultCache?.find(messageId)
-                    if (cached != null) {
-                        publishReply(sweepKey, cached)
-                        visibleHistoryMessages[record.id]?.let { message ->
-                            analysisResultSink?.publish(cached.forVisibleMessage(sweepKey, message))
-                        }
-                        continue
-                    }
+                    if (messageId in cachedTargets) continue
 
                     if (!reserveMessageAnalysis(messageId, checkNotNull(coroutineContext[Job]))) continue
                     try {
+                        // A previous model call or another capture job may have filled
+                        // this miss since the batch read. Recheck under the reservation.
+                        val newlyCached = analysisResultCache?.find(messageId)
+                        if (!isHistorySweepCurrent(sweepKey)) return@launch
+                        if (newlyCached != null) {
+                            publishReply(sweepKey, newlyCached)
+                            visibleHistoryMessages[record.id]?.let { message ->
+                                analysisResultSink?.publish(newlyCached.forVisibleMessage(sweepKey, message))
+                            }
+                            continue
+                        }
                         val conversation = com.jev.relationship.domain.source.LocalHistoryContext.forRecord(history, index)
                         val output = try {
                             _state.value = RealtimeAnalysisState.Analyzing(sweepKey, visibleGeneration, messageId)

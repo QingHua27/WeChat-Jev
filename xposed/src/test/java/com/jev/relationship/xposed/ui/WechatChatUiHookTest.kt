@@ -28,7 +28,39 @@ import java.util.concurrent.TimeUnit
 
 @RunWith(RobolectricTestRunner::class)
 class WechatChatUiHookTest {
+    @Test fun `fast mode keeps active conversation beyond cap and switching restores bounds`() {
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        val installer = RecordingInstaller()
+        val fragment = AssistantChatFragment(activity)
+        val hook = WechatChatUiHook(activity, installer, maxCachedResults = 3,
+            classResolver = { _, _ -> AssistantChatFragment::class.java })
+        hook.install()
+        try {
+            installer.callback("onCreateView", FrameLayout(activity), fragment)
+            hook.setFastCacheDisplay(true)
+            hook.onAnalysisResults((1..20).map { result().copy(messageId = "m$it",
+                conversationHash = WechatMessageAnchorResolver.hash("alice")) })
+            assertEquals(20, hook.cachedResultCount)
+            fragment.conversationId = "bob"
+            installer.callback("onCreateView", FrameLayout(activity), fragment)
+            assertEquals(3, hook.cachedResultCount)
+            hook.onAnalysisResults((1..20).map { result().copy(messageId = "b$it",
+                conversationHash = WechatMessageAnchorResolver.hash("bob")) })
+            assertEquals(23, hook.cachedResultCount)
+            hook.setFastCacheDisplay(false)
+            assertEquals(3, hook.cachedResultCount)
+        } finally { hook.uninstall(); activity.finish() }
+    }
     private val context: Context = RuntimeEnvironment.getApplication()
+
+    @Test fun `cross conversation memory retains a bounded set of recent results`() {
+        val hook = WechatChatUiHook(context, RecordingInstaller(), maxCachedResults = 3)
+        repeat(8) { hook.onAnalysisResult(result().copy(messageId = "m$it", conversationHash = "c$it")) }
+        assertEquals(3, hook.cachedResultCount)
+        hook.clear()
+        assertEquals("hiding must retain memory cache", 3, hook.cachedResultCount)
+        hook.uninstall()
+    }
 
     @Test fun `header actions are installed when chrome becomes available after fragment attachment`() {
         val activity = Robolectric.buildActivity(Activity::class.java).setup().get()

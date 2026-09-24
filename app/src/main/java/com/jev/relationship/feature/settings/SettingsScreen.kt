@@ -7,6 +7,7 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -47,6 +48,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -76,6 +78,7 @@ fun SettingsScreen(
     onSelectPreset: (String) -> Unit,
     onSavePreset: (String) -> Unit,
     onDeletePreset: (String) -> Unit,
+    onFastCacheDisplayChanged: (Boolean) -> Unit = {},
 ) {
     var showReplyModelSettings by rememberSaveable { mutableStateOf(false) }
     var showTokenUsage by rememberSaveable { mutableStateOf(false) }
@@ -113,6 +116,7 @@ fun SettingsScreen(
         onConfirmEnableRealtime = onConfirmEnableRealtime,
         onCancelEnableRealtime = onCancelEnableRealtime,
         onDisableRealtime = onDisableRealtime,
+        onFastCacheDisplayChanged = onFastCacheDisplayChanged,
         onSelectPreset = onSelectPreset,
         onSave = onSave,
     )
@@ -130,6 +134,7 @@ private fun SettingsHomeScreen(
     onDisableRealtime: () -> Unit,
     onSelectPreset: (String) -> Unit,
     onSave: () -> Unit,
+    onFastCacheDisplayChanged: (Boolean) -> Unit,
 ) {
     val context = LocalContext.current
     var showJevKey by rememberSaveable { mutableStateOf(false) }
@@ -331,31 +336,51 @@ private fun SettingsHomeScreen(
 
             Spacer(Modifier.size(8.dp))
 
-            SettingsCard(shape = cardShape, cardPadding = 10.dp, itemSpacing = 4.dp) {
+            SettingsCard(shape = RoundedCornerShape(18.dp), cardPadding = 4.dp, itemSpacing = 2.dp) {
                 Row(Modifier.fillMaxWidth().heightIn(min = 48.dp)
                     .clip(RoundedCornerShape(12.dp)).clickable(role = Role.Button, onClick = onOpenTokenUsage),
-                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    IconBadge(symbol = "▥", tint = Color(0xFF377DEE), background = Color(0xFFEAF2FF))
+                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    IconBadge(symbol = "▥", tint = Color(0xFF377DEE), background = Color(0xFFEAF2FF), size = 26.dp)
                     Column(Modifier.weight(1f)) {
-                        Text("Token 使用统计", fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
-                        Text("Jev · 理解模型 · 用量走势", color = SECONDARY_TEXT, fontSize = 11.sp)
+                        Text("Token 使用统计", fontWeight = FontWeight.SemiBold, fontSize = 14.sp, lineHeight = 18.sp)
+                        Text("Jev · 理解模型 · 用量走势", color = SECONDARY_TEXT, fontSize = 10.sp, lineHeight = 13.sp)
                     }
-                    Text("›", color = SECONDARY_TEXT, fontSize = 24.sp)
+                    Box(Modifier.width(40.dp), contentAlignment = Alignment.Center) {
+                        Text("›", color = SECONDARY_TEXT, fontSize = 20.sp)
+                    }
                 }
             }
 
-            SettingsCard(shape = cardShape, cardPadding = 6.dp, itemSpacing = 5.dp) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    IconBadge(symbol = "▤", tint = Color(0xFF28A878), background = Color(0xFFE4F7EE))
-                    Spacer(Modifier.width(12.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("实时解析", style = MaterialTheme.typography.titleMedium.copy(fontSize = 16.sp, lineHeight = 20.sp), fontWeight = FontWeight.SemiBold)
-                        Text("只解析对方新发的普通消息", style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp, lineHeight = 14.sp), color = SECONDARY_TEXT)
+            SettingsCard(shape = RoundedCornerShape(18.dp), cardPadding = 4.dp, itemSpacing = 2.dp) {
+                Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).clip(RoundedCornerShape(12.dp))
+                    .toggleable(value = state.realtime.fastCacheDisplay, role = Role.Switch,
+                        onValueChange = onFastCacheDisplayChanged), verticalAlignment = Alignment.CenterVertically) {
+                    IconBadge(symbol = "◷", tint = Color(0xFF377DEE), background = Color(0xFFEAF2FF), size = 26.dp)
+                    Spacer(Modifier.width(10.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text("快速显示已缓存解析", fontWeight = FontWeight.SemiBold, fontSize = 14.sp, lineHeight = 18.sp)
+                        Text(if (state.realtime.fastCacheDisplay) "预载本会话缓存，更快显示，占用更多内存"
+                            else "随查看按需加载，节省内存", color = SECONDARY_TEXT,
+                            fontSize = 10.sp, lineHeight = 13.sp)
                     }
-                    Switch(
-                        checked = state.realtime.enabled,
-                        onCheckedChange = { enabled -> if (enabled) onRequestEnableRealtime() else onDisableRealtime() },
-                    )
+                    CompactSettingsSwitch(checked = state.realtime.fastCacheDisplay)
+                }
+                Text("缓存加载不耗 Token，关闭不删除记录。", modifier = Modifier.padding(start = 36.dp, bottom = 3.dp),
+                    color = SECONDARY_TEXT, fontSize = 10.sp, lineHeight = 13.sp)
+            }
+
+            SettingsCard(shape = RoundedCornerShape(18.dp), cardPadding = 4.dp, itemSpacing = 2.dp) {
+                Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).clip(RoundedCornerShape(12.dp))
+                    .toggleable(value = state.realtime.enabled, role = Role.Switch,
+                        onValueChange = { enabled -> if (enabled) onRequestEnableRealtime() else onDisableRealtime() }),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    IconBadge(symbol = "▤", tint = Color(0xFF28A878), background = Color(0xFFE4F7EE), size = 26.dp)
+                    Spacer(Modifier.width(10.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("实时解析", fontSize = 14.sp, lineHeight = 18.sp, fontWeight = FontWeight.SemiBold)
+                        Text("只解析对方新发的普通消息", fontSize = 10.sp, lineHeight = 13.sp, color = SECONDARY_TEXT)
+                    }
+                    CompactSettingsSwitch(checked = state.realtime.enabled)
                 }
             }
         }
@@ -397,12 +422,20 @@ private fun SettingsCard(
 }
 
 @Composable
-private fun IconBadge(symbol: String, tint: Color, background: Color) {
+private fun IconBadge(symbol: String, tint: Color, background: Color, size: Dp = 32.dp) {
     Box(
-        modifier = Modifier.size(32.dp).clip(RoundedCornerShape(11.dp)).background(background),
+        modifier = Modifier.size(size).clip(RoundedCornerShape(size * 0.34f)).background(background),
         contentAlignment = Alignment.Center,
     ) {
         Text(symbol, color = tint, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+    }
+}
+
+@Composable
+private fun CompactSettingsSwitch(checked: Boolean) {
+    // The parent row owns the full-size touch target and switch semantics.
+    Box(Modifier.size(width = 40.dp, height = 32.dp), contentAlignment = Alignment.Center) {
+        Switch(checked = checked, onCheckedChange = null, modifier = Modifier.scale(0.68f))
     }
 }
 

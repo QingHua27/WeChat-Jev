@@ -14,6 +14,68 @@ import org.robolectric.Shadows.shadowOf
 
 @RunWith(RobolectricTestRunner::class)
 class IpcAnalysisResultBroadcasterTest {
+    @Test fun `display preference arrives before cached results and survives reconnect`() {
+        val received = mutableListOf<Message>()
+        val broadcaster = IpcAnalysisResultBroadcaster { _, message -> received += message }
+        broadcaster.setFastCacheDisplay(false)
+        broadcaster.publish(result())
+        val target = Messenger(Handler(Looper.getMainLooper()))
+        val caps = setOf(IpcCapabilities.EMBEDDED_CHAT_CARD, IpcCapabilities.CACHE_PRELOAD)
+        broadcaster.setClient(target, caps)
+        assertEquals(IpcProtocol.MSG_CACHE_DISPLAY_MODE, received.first().what)
+        assertFalse(received.first().data.getBoolean(IpcProtocol.KEY_FAST_CACHE_DISPLAY))
+        assertEquals(IpcProtocol.MSG_ANALYSIS_RESULT, received[1].what)
+        broadcaster.setFastCacheDisplay(true)
+        assertTrue(received.last().data.getBoolean(IpcProtocol.KEY_FAST_CACHE_DISPLAY))
+        broadcaster.clearClient()
+        received.clear()
+        broadcaster.setClient(target, caps)
+        assertTrue(received.single().data.getBoolean(IpcProtocol.KEY_FAST_CACHE_DISPLAY))
+    }
+    @Test fun `batch capable client receives a group in one IPC message`() {
+        val received = mutableListOf<Message>()
+        val broadcaster = IpcAnalysisResultBroadcaster { _, message -> received += message }
+        broadcaster.setClient(Messenger(Handler(Looper.getMainLooper())),
+            setOf(IpcCapabilities.EMBEDDED_CHAT_CARD, "analysis_result_batch"))
+        broadcaster.publishAll(listOf(result("one"), result("two")))
+        assertEquals(1, received.size)
+        assertEquals(IpcProtocol.MSG_ANALYSIS_BATCH, received.single().what)
+        assertEquals(listOf(result("one"), result("two")), IpcCodec.decodeAnalysisResults(received.single().data))
+    }
+
+    @Test fun `batch sending is bounded and old clients still receive individual results`() {
+        val received = mutableListOf<Message>()
+        val broadcaster = IpcAnalysisResultBroadcaster { _, message -> received += message }
+        val target = Messenger(Handler(Looper.getMainLooper()))
+        val results = (1..25).map { result("m$it") }
+        broadcaster.setClient(target, setOf(IpcCapabilities.EMBEDDED_CHAT_CARD, IpcCapabilities.ANALYSIS_RESULT_BATCH))
+        broadcaster.publishAll(results)
+        assertEquals(2, received.size)
+        assertEquals(results, received.flatMap { IpcCodec.decodeAnalysisResults(it.data) })
+        received.clear()
+        broadcaster.setClient(target, setOf(IpcCapabilities.EMBEDDED_CHAT_CARD))
+        broadcaster.publishAll(results)
+        assertEquals(results, received.map { IpcCodec.decodeAnalysisResult(it.data) })
+    }
+
+    @Test fun `failed batch survives reconnect without losing its results`() {
+        val received = mutableListOf<Message>()
+        var failing = true
+        val broadcaster = IpcAnalysisResultBroadcaster { _, message ->
+            if (failing) throw android.os.RemoteException("disconnected")
+            received += message
+        }
+        val target = Messenger(Handler(Looper.getMainLooper()))
+        val capabilities = setOf(IpcCapabilities.EMBEDDED_CHAT_CARD, IpcCapabilities.ANALYSIS_RESULT_BATCH)
+        broadcaster.setClient(target, capabilities)
+        val expected = listOf(result("one"), result("two"))
+        broadcaster.publishAll(expected)
+        assertFalse(broadcaster.embeddedClientActive.value)
+        failing = false
+        broadcaster.setClient(target, capabilities)
+        assertEquals(expected, IpcCodec.decodeAnalysisResults(received.single().data))
+    }
+
     @Test
     fun `capable client receives one encoded analysis result`() {
         val received = mutableListOf<Message>()

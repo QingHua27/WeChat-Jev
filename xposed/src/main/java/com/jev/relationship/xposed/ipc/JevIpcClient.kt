@@ -27,6 +27,8 @@ class JevIpcClient(
     private val onRegenerationStatus: (String, String) -> Unit = { _, _ -> },
     private val onReplySuggestion: (com.jev.relationship.ipc.IpcReplySuggestion) -> Unit = {},
     private val onConnected: () -> Unit = {},
+    private val onAnalysisResults: (List<IpcAnalysisResult>) -> Unit = { it.forEach(onAnalysisResult) },
+    private val onFastCacheDisplay: (Boolean) -> Unit = {},
 ) {
     private val handler = Handler(Looper.getMainLooper())
     private val state = IpcClientState(pairingTokenProvider)
@@ -57,6 +59,8 @@ class JevIpcClient(
             drainQueue()
         },
         onAnalysisResult = onAnalysisResult,
+        onAnalysisResults = onAnalysisResults,
+        onFastCacheDisplay = onFastCacheDisplay,
         onAnalysisCleared = onDisconnected,
     )
 

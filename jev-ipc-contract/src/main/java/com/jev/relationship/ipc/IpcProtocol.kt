@@ -35,6 +35,10 @@ object IpcProtocol {
     const val MSG_CHAT_ASSISTANT_PROGRESS = 107
     const val MSG_REGENERATE_STATUS = 108
     const val MSG_REPLY_SUGGESTION = 109
+    const val MSG_ANALYSIS_BATCH = 110
+    const val MSG_CACHE_DISPLAY_MODE = 111
+    const val KEY_FAST_CACHE_DISPLAY = "fast_cache_display"
+    const val KEY_ANALYSIS_RESULTS = "analysis_results"
 
     const val KEY_PROTOCOL_VERSION = "protocol_version"
     const val KEY_PAIRING_TOKEN = "pairing_token"
@@ -74,6 +78,8 @@ object IpcProtocol {
 }
 
 object IpcCapabilities {
+    const val CACHE_PRELOAD = "cache_preload"
+    const val ANALYSIS_RESULT_BATCH = "analysis_result_batch"
     const val EMBEDDED_CHAT_CARD = "embedded_chat_card"
     const val LOCAL_HISTORY = "local_history"
 }

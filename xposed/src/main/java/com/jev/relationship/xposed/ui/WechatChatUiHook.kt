@@ -37,6 +37,7 @@ class WechatChatUiHook(
             context = appContext,
             resolveTarget = anchorResolver::resolve,
             resolveTargets = anchorResolver::resolveAll,
+            resolvePreloadedTargets = anchorResolver::resolveCached,
         )
     },
     private val classResolver: (String, ClassLoader) -> Class<*> = { name, loader ->
@@ -50,6 +51,7 @@ class WechatChatUiHook(
     private val onRegenerateConversation: (String) -> Boolean = { false },
     private val visibleParser: WechatVisibleChatSnapshotParser = WechatVisibleChatSnapshotParser(),
     private val onChatResumed: () -> Unit = {},
+    private val maxCachedResults: Int = 256,
 ) {
     constructor(
         context: Context,
@@ -104,7 +106,23 @@ class WechatChatUiHook(
     private val snapshotScrollListener = android.view.ViewTreeObserver.OnScrollChangedListener {
         scheduleVisibleSnapshot()
     }
-    private val pendingResults = linkedMapOf<String, IpcAnalysisResult>()
+    private val pendingResults = LinkedHashMap<String, IpcAnalysisResult>(16, 0.75f, true)
+    internal val cachedResultCount: Int get() = pendingResults.size
+    private var fastCacheDisplay = false
+
+    fun setFastCacheDisplay(enabled: Boolean) {
+        fastCacheDisplay = enabled
+        trimPendingResults()
+        host?.setFastCacheDisplay(enabled)
+    }
+
+    private fun trimPendingResults() {
+        val activeHash = WechatMessageAnchorResolver.hash(activeConversationId)
+        val evictable = pendingResults.entries.filter { (_, value) ->
+            !fastCacheDisplay || activeConversationId.isBlank() || value.conversationHash != activeHash
+        }.map { it.key }
+        for (key in evictable.take((evictable.size - maxCachedResults).coerceAtLeast(0))) pendingResults.remove(key)
+    }
 
     @Synchronized
     fun install(): HookInstallResult {
@@ -125,20 +143,33 @@ class WechatChatUiHook(
             runCatching { handles.forEach(WechatHookHandle::unhook) }
             return HookInstallResult.FAILED
         }
+        // WeChat 8.0.72 uses RelativeLayout message rows. Restore cached cards
+        // before native measurement; the host immediately ignores other rows.
+        runCatching {
+            val measure = RelativeLayout::class.java.getDeclaredMethod("onMeasure",
+                Int::class.javaPrimitiveType, Int::class.javaPrimitiveType)
+            installer.installBefore(measure) { row ->
+                (row as? View)?.let { host?.prepareRowForMeasure(it) }
+            }
+        }.onSuccess { handles += it }
+            .onFailure { Log.w(TAG, "cached row measurement hook unavailable", it) }
         hookHandles += handles
         installed = true
         return HookInstallResult.INSTALLED
     }
 
-    fun onAnalysisResult(result: IpcAnalysisResult) {
-        if (result.isOutgoing) return
-        if (activeConversationId.isNotBlank() &&
-            result.conversationHash != WechatMessageAnchorResolver.hash(activeConversationId)
-        ) return
-        pendingResults["${result.conversationHash}:${result.messageId}"] = result
-        Log.i(TAG, "analysis result routed pending=${pendingResults.size}")
+    fun onAnalysisResult(result: IpcAnalysisResult) = onAnalysisResults(listOf(result))
+
+    fun onAnalysisResults(results: List<IpcAnalysisResult>) {
+        val conversationHash = WechatMessageAnchorResolver.hash(activeConversationId)
+        val matching = results.filter { !it.isOutgoing &&
+            (activeConversationId.isBlank() || it.conversationHash == conversationHash) }
+        if (matching.isEmpty()) return
+        matching.forEach { pendingResults["${it.conversationHash}:${it.messageId}"] = it }
+        trimPendingResults()
+        Log.i(TAG, "analysis results routed batch=${matching.size} pending=${pendingResults.size}")
         host?.setAnalysisEnabled(activeAnalysisEnabled)
-        host?.onAnalysisResult(result)
+        host?.onAnalysisResults(matching)
     }
 
     fun clear() {
@@ -221,6 +252,7 @@ class WechatChatUiHook(
         host?.destroy()
         val nextHost = hostFactory(context)
         host = nextHost
+        nextHost.setFastCacheDisplay(fastCacheDisplay)
         Log.i(TAG, "chat host created pending=${pendingResults.size}")
         nextHost.setAnalysisEnabled(activeAnalysisEnabled)
         restoreCachedResults(nextHost)
@@ -245,6 +277,13 @@ class WechatChatUiHook(
         }.getOrNull()
         if (root != null) {
             readConversation(activeFragment, root)
+            if (host == null || host?.destroyed == true) {
+                host = hostFactory(context).also { recovered ->
+                    recovered.setFastCacheDisplay(fastCacheDisplay)
+                    recovered.setAnalysisEnabled(activeAnalysisEnabled)
+                    restoreCachedResults(recovered)
+                }
+            }
             host?.attach(root)
             installActionButtons(root)
             observeVisibleMessages(root)
@@ -296,6 +335,7 @@ class WechatChatUiHook(
                 ?.invoke(owner, "Chat_User") as? String
         }.getOrNull().orEmpty()
         activeConversationTitle = findTitle(root).ifBlank { activeConversationId }
+        trimPendingResults()
         replyBar.setConversation(WechatMessageAnchorResolver.hash(activeConversationId))
         replyBar.setUserHidden(JevConversationAnalysisPrefs.isReplyHidden(context, activeConversationId))
         if (previousConversationId.isNotBlank() && previousConversationId != activeConversationId) {
@@ -313,9 +353,12 @@ class WechatChatUiHook(
 
     private fun restoreCachedResults(target: EmbeddedChatCardHost) {
         val conversationHash = WechatMessageAnchorResolver.hash(activeConversationId)
-        pendingResults.values.filter {
+        val cached = pendingResults.values.filter {
             activeConversationId.isBlank() || it.conversationHash == conversationHash
-        }.forEach(target::onAnalysisResult)
+        }
+        // Touch the restored conversation without mutating the map during iteration.
+        cached.forEach { pendingResults["${it.conversationHash}:${it.messageId}"] }
+        target.onAnalysisResults(cached)
     }
 
     private fun attachReplyBar(root: View) {

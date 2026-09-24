@@ -189,6 +189,10 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    fun setFastCacheDisplay(enabled: Boolean) {
+        viewModelScope.launch { realtimeRepository.setFastCacheDisplay(enabled) }
+    }
+
     fun save() {
         val settings = _uiState.value.settings
         if (settings.replyBaseUrl.isNotBlank()) {

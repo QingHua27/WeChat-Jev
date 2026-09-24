@@ -7,6 +7,15 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 class RoomAnalysisResultCacheTest {
+    @Test fun batchLookupUsesOneQueryAndKeepsMessageKeys() = runBlocking {
+        val expected = result(true)
+        val dao = RecordingDao(AnalysisResultCacheEntity.from(42L, expected))
+        val found = RoomAnalysisResultCache(dao).findAll(listOf("wechat-8.0.72-42", "wechat-local-42", "wechat-8.0.72-43", "invalid"))
+        assertEquals(setOf("wechat-8.0.72-42", "wechat-local-42"), found.keys)
+        assertEquals(expected, found["wechat-local-42"])
+        assertEquals("current-screen cache should use one database query", 1, dao.readCount)
+    }
+
     @Test
     fun failedOrLegacyResultsAreNotReusedAsSuccessfulContextualCards() = runBlocking {
         val fallback = result(detailContextual = false)
@@ -52,12 +61,24 @@ class RoomAnalysisResultCacheTest {
     )
 
     private class RecordingDao(var entity: AnalysisResultCacheEntity?) : AnalysisResultCacheDao {
+        override suspend fun conversationPage(conversationHash: String, beforeId: Long, limit: Int) =
+            listOfNotNull(entity?.takeIf { it.conversationHash == conversationHash && it.localMessageId < beforeId })
         var saveCount = 0
+        var readCount = 0
 
-        override suspend fun findByMessageId(messageId: Long): AnalysisResultCacheEntity? =
-            entity?.takeIf { it.localMessageId == messageId }
+        override suspend fun findByMessageId(messageId: Long): AnalysisResultCacheEntity? {
+            readCount++
+            return entity?.takeIf { it.localMessageId == messageId }
+        }
 
         override suspend fun sourceTextLength(historyId: Long): Int? = null
+
+        override suspend fun findByMessageIds(messageIds: List<Long>): List<AnalysisResultCacheEntity> {
+            readCount++
+            return listOfNotNull(entity?.takeIf { it.localMessageId in messageIds })
+        }
+
+        override suspend fun sourceTextLengths(historyIds: List<Long>): List<CacheHistoryLength> = emptyList()
 
         override suspend fun save(entity: AnalysisResultCacheEntity) {
             saveCount += 1

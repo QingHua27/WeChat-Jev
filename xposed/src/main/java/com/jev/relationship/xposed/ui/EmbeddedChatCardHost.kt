@@ -15,7 +15,55 @@ class EmbeddedChatCardHost(
     private val cardFactory: (Context) -> JevEmbeddedAnalysisCardView = ::JevEmbeddedAnalysisCardView,
     private val readLocalMessageId: (View) -> Long? = WechatMessageRecordIdReader::read,
     private val resolveTargets: ((ViewGroup, Collection<IpcAnalysisResult>) -> Map<String, WechatMessageAnchor>)? = null,
+    private val maxCachedResults: Int = 128,
+    private val resolvePreloadedTargets: ((ViewGroup, Map<String, IpcAnalysisResult>) -> Map<String, WechatMessageAnchor>)? = null,
 ) {
+    fun prepareRowForMeasure(row: View) {
+        if (!fastCacheDisplay || !active || !analysisEnabled || destroyed || results.isEmpty() ||
+            row.parent !== chatList || row !is ViewGroup) return
+        // Remove a previous owner's card before the recycled row is measured.
+        // Keep the native message intact and never expose a different message's result.
+        rendered.values.forEach { entry ->
+            val anchor = entry.anchor
+            val value = entry.renderedResult
+            if (anchor != null && value != null && isDescendant(anchor, row) && !hasStableIdentity(entry, value)) {
+                removeEntry(entry)
+            }
+        }
+        anchorTextResolver.resolveBoundRow(row, results).forEach { (id, target) ->
+            val value = results[id] ?: return@forEach
+            val entry = rendered.getOrPut(id) {
+                RenderedAnalysis(cardFactory(context).also { createdCardCount++ }, EmbeddedChatMessageInserter())
+            }
+            entry.view.applyTheme(row.resources.configuration.uiMode)
+            entry.invalidated = false
+            renderEntry(entry, value)
+            val oldParent = entry.view.parent
+            val mounted = entry.inserter.insertBelow(target.message, entry.view, false)
+            if (oldParent !== entry.view.parent) {
+                layoutRevision++
+                if (!measurementPreparationLogged && mounted) {
+                    measurementPreparationLogged = true
+                    Log.i(TAG, "cached row preparation active before native measurement")
+                }
+            }
+            if (mounted) {
+                entry.anchor = target.message
+                entry.localMessageId = target.localMessageId
+            }
+            setEntryVisible(entry, mounted)
+        }
+        trimMemoryCache()
+    }
+    private var fastCacheDisplay = false
+    private var measurementPreparationLogged = false
+
+    fun setFastCacheDisplay(enabled: Boolean) {
+        if (fastCacheDisplay == enabled) return
+        fastCacheDisplay = enabled
+        trimMemoryCache()
+        renderNow()
+    }
     private data class RenderedAnalysis(
         val view: JevEmbeddedAnalysisCardView,
         val inserter: EmbeddedChatMessageInserter,
@@ -25,9 +73,9 @@ class EmbeddedChatCardHost(
         var invalidated: Boolean = false,
     )
 
-    private val results = linkedMapOf<String, IpcAnalysisResult>()
+    private val results = LinkedHashMap<String, IpcAnalysisResult>(16, 0.75f, true)
     private val rendered = linkedMapOf<String, RenderedAnalysis>()
-    private val anchorTextResolver = WechatMessageAnchorResolver()
+    private val anchorTextResolver = WechatMessageAnchorResolver(localMessageId = readLocalMessageId)
     private val mainHandler = Handler(Looper.getMainLooper())
     private var container: ViewGroup? = null
     private var chatList: ViewGroup? = null
@@ -44,7 +92,7 @@ class EmbeddedChatCardHost(
             if (!active || destroyed || scrolling) return
             renderNow()
             retryIndex++
-            if (retryIndex < RENDER_RETRY_DELAYS_MS.size) {
+            if (retryIndex < RENDER_RETRY_DELAYS_MS.size && hasPendingMounts()) {
                 mainHandler.postDelayed(this, RENDER_RETRY_DELAYS_MS[retryIndex])
             }
         }
@@ -84,13 +132,27 @@ class EmbeddedChatCardHost(
 
     var createdCardCount: Int = 0
         private set
+    internal val cachedResultCount: Int get() = results.size
+    internal val retainedCardCount: Int get() = rendered.size
     var destroyed: Boolean = false
         private set
 
     val cardVisible: Boolean
         get() = rendered.values.any { it.view.visibility == View.VISIBLE }
 
-    fun onAnalysisResult(value: IpcAnalysisResult) {
+    fun onAnalysisResults(values: Collection<IpcAnalysisResult>) {
+        var changed = false
+        values.forEach { if (rememberResult(it)) changed = true }
+        if (!changed) return
+        Log.i(TAG, "analysis results received batch=${values.size} count=${results.size}")
+        if (scrolling) scheduleViewportRender() else renderNow()
+        trimMemoryCache()
+        if (!scrolling) rootView?.let(::scheduleRenderRetries)
+    }
+
+    fun onAnalysisResult(value: IpcAnalysisResult) = onAnalysisResults(listOf(value))
+
+    private fun rememberResult(value: IpcAnalysisResult): Boolean {
         val now = android.os.SystemClock.uptimeMillis()
         if (now - lastDiagnosticAt > 3_000L) {
             lastDiagnosticAt = now
@@ -102,22 +164,21 @@ class EmbeddedChatCardHost(
                 "cardSize=${entry?.view?.width}x${entry?.view?.height} " +
                 "anchorShown=${entry?.anchor?.isShown} bound=${entry?.inserter?.boundMessage != null}")
         }
-        if (destroyed || value.isOutgoing) return
+        if (destroyed || value.isOutgoing) return false
         if (results[value.messageId] == value) {
             // Identical data can arrive after WeChat has rebuilt its native rows.
             // Skip a healthy mount, but coalesce a local repair of stale UI state.
             val host = (chatList?.takeIf { it.childCount > 0 } ?: container)
             val entry = rendered[value.messageId]
-            if (entry != null && host != null && !isStableMountedEntry(host, entry, value) &&
+            if (entry == null || host == null) scheduleViewportRender()
+            else if (!isStableMountedEntry(host, entry, value) &&
                 (entry.view.parent == null || !isDescendant(entry.view, host) ||
                     entry.inserter.boundMessage?.parent !== entry.view.parent)) scheduleViewportRender()
-            return
+            return false
         }
         results[value.messageId] = value
         rendered[value.messageId]?.invalidated = false
-        Log.i(TAG, "analysis result received count=${results.size}")
-        if (scrolling) scheduleViewportRender() else renderNow()
-        if (!scrolling) rootView?.let(::scheduleRenderRetries)
+        return true
     }
 
     fun attach(root: View) {
@@ -173,33 +234,53 @@ class EmbeddedChatCardHost(
     }
 
     fun renderNow() {
+        // A fragment may resume before its RecyclerView exists, or retain its
+        // root while WeChat replaces the list. Rediscover that late hierarchy.
+        val root = rootView
+        val list = chatList
+        if (root != null && (list == null || !isDescendant(list, root))) {
+            locator.locate(root)?.let { located ->
+                chatList = located.chatList as? ViewGroup
+                container = located.container
+            }
+        }
         val host = (chatList?.takeIf { it.childCount > 0 } ?: container) ?: return
         if (!active || !analysisEnabled) {
             removeEmbeddedViews()
             return
         }
-        val entries = results.mapValues { (messageId, _) ->
+        val preloadedTargets = if (fastCacheDisplay) {
+            resolvePreloadedTargets?.invoke(host, results)
+                ?: resolveTargets?.invoke(host, results.values)
+                ?: results.values.mapNotNull { value -> resolveTarget(host, value)?.let { value.messageId to it } }.toMap()
+        } else null
+        // Retain data for the whole conversation, but only allocate views for rows
+        // that exist. Stable-ID lookup keeps scrolling independent of cache size.
+        val workingResults = if (preloadedTargets != null) {
+            (preloadedTargets.keys + rendered.keys).mapNotNull { id -> results[id]?.let { id to it } }.toMap()
+        } else results
+        val entries = workingResults.mapValues { (messageId, _) ->
             rendered.getOrPut(messageId) {
                 RenderedAnalysis(
                     view = cardFactory(context).also { created -> createdCardCount += 1 },
                     inserter = EmbeddedChatMessageInserter(),
                 )
-            }
+            }.also { it.view.applyTheme(host.resources.configuration.uiMode) }
         }
-        val stableIds = results.filter { (messageId, value) ->
+        val stableIds = workingResults.filter { (messageId, value) ->
             isStableMountedEntry(host, entries.getValue(messageId), value)
         }.keys
-        val needsResolution = results.filterKeys { it !in stableIds }
-        val resolvedTargets = if (needsResolution.isEmpty()) null else resolveTargets?.invoke(host, needsResolution.values)
+        val needsResolution = workingResults.filterKeys { it !in stableIds }
+        val resolvedTargets = preloadedTargets ?: if (needsResolution.isEmpty()) null else resolveTargets?.invoke(host, needsResolution.values)
 
-        results.forEach { (messageId, value) ->
+        workingResults.forEach { (messageId, value) ->
             val entry = entries.getValue(messageId)
             if (messageId in stableIds) {
                 renderEntry(entry, value)
                 setEntryVisible(entry, true)
                 return@forEach
             }
-            val target = if (resolveTargets != null) {
+            val target = if (preloadedTargets != null || resolveTargets != null) {
                 resolvedTargets?.get(messageId)
             } else {
                 runCatching { resolveTarget(host, value) }.getOrNull()
@@ -211,8 +292,7 @@ class EmbeddedChatCardHost(
             if ((entry.invalidated && !sameStableMessage) ||
                 (target != null && entry.anchor != null && entry.anchor !== target.message && !sameStableMessage)
             ) {
-                removeEntry(entry)
-                entry.invalidated = true
+                invalidateEntry(entry)
                 return@forEach
             }
             if (sameStableMessage) entry.invalidated = false
@@ -240,6 +320,29 @@ class EmbeddedChatCardHost(
                 entry.localMessageId = target.localMessageId
             }
             setEntryVisible(entry, inserted)
+        }
+        if (!hasPendingMounts()) mainHandler.removeCallbacks(retryRunnable)
+        trimMemoryCache()
+    }
+
+    private fun trimMemoryCache() {
+        if (fastCacheDisplay) {
+            for (id in rendered.keys.toList()) {
+                if (rendered.size <= maxCachedResults) break
+                if (rendered[id]?.view?.isAttachedToWindow == true) continue
+                rendered.remove(id)?.let(::removeEntry)
+            }
+            return
+        }
+        if (results.size <= maxCachedResults) return
+        for (id in results.keys.toList()) {
+            if (results.size <= maxCachedResults) break
+            val entry = rendered[id]
+            // Even an offscreen attached row contributes to the list's geometry.
+            // Keep it until WeChat detaches it; never resize live rows to hit a cap.
+            if (entry?.view?.isAttachedToWindow == true) continue
+            rendered.remove(id)?.let(::removeEntry)
+            results.remove(id)
         }
     }
 
@@ -270,6 +373,11 @@ class EmbeddedChatCardHost(
         setEntryVisible(entry, false)
     }
 
+    private fun invalidateEntry(entry: RenderedAnalysis) {
+        removeEntry(entry)
+        entry.invalidated = true
+    }
+
     private fun renderEntry(entry: RenderedAnalysis, value: IpcAnalysisResult) {
         if (entry.renderedResult == value) return
         if (entry.view.parent != null) layoutRevision++
@@ -284,7 +392,7 @@ class EmbeddedChatCardHost(
         entry.view.visibility = visibility
     }
 
-    private fun isDescendant(view: View, host: ViewGroup): Boolean {
+    private fun isDescendant(view: View, host: View): Boolean {
         var parent = view.parent
         while (parent is View) {
             if (parent === host) return true
@@ -324,9 +432,20 @@ class EmbeddedChatCardHost(
 
     private fun scheduleRenderRetries(root: View) {
         mainHandler.removeCallbacks(retryRunnable)
-        if (!active || destroyed || root !== rootView) return
+        if (!active || destroyed || !analysisEnabled || root !== rootView || !hasPendingMounts()) return
         retryIndex = 0
         mainHandler.postDelayed(retryRunnable, RENDER_RETRY_DELAYS_MS[0])
+    }
+
+    private fun hasPendingMounts(): Boolean {
+        // Preloaded offscreen data is expected to have no view. Native layout
+        // events mount it when its row appears; don't poll the entire history.
+        if (fastCacheDisplay) return false
+        val host = (chatList?.takeIf { it.childCount > 0 } ?: container) ?: return results.isNotEmpty()
+        return results.any { (id, value) ->
+            val entry = rendered[id]
+            entry == null || entry.view.visibility != View.VISIBLE || !isStableMountedEntry(host, entry, value)
+        }
     }
 
     private companion object {

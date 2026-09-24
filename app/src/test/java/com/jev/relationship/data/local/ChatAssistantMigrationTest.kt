@@ -32,6 +32,8 @@ class ChatAssistantMigrationTest {
             original.openHelper.writableDatabase.apply {
                 execSQL("DROP TABLE chat_assistant_turns")
                 execSQL("DROP TABLE chat_assistant_sessions")
+                execSQL("DROP TABLE message_analysis_cache")
+                execSQL("CREATE TABLE message_analysis_cache (localMessageId INTEGER NOT NULL PRIMARY KEY, resultJson TEXT NOT NULL, cachedAt INTEGER NOT NULL)")
                 execSQL("PRAGMA user_version = 3")
             }
             original.close()
@@ -39,6 +41,7 @@ class ChatAssistantMigrationTest {
             val migrated = Room.databaseBuilder(context, JevDatabase::class.java, name)
                 .allowMainThreadQueries()
                 .addMigrations(JevDatabaseMigrations.VERSION_3_TO_4)
+                .addMigrations(JevDatabaseMigrations.VERSION_4_TO_5)
                 .build()
             try {
                 assertNotNull(kotlinx.coroutines.runBlocking { migrated.analysisDao().findById(analysisId) })

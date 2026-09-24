@@ -24,6 +24,7 @@ fun JevApp() {
             onConfirmEnableRealtime = settingsViewModel::confirmEnableRealtime,
             onCancelEnableRealtime = settingsViewModel::cancelEnableRealtime,
             onDisableRealtime = settingsViewModel::disableRealtime,
+            onFastCacheDisplayChanged = settingsViewModel::setFastCacheDisplay,
             onSave = settingsViewModel::save,
             onSelectPreset = settingsViewModel::selectReplyModelPreset,
             onSavePreset = settingsViewModel::saveReplyModelPreset,

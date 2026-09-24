@@ -20,6 +20,163 @@ import com.jev.relationship.ipc.IpcIntentProbability
 
 @RunWith(RobolectricTestRunner::class)
 class EmbeddedChatCardHostTest {
+    @Test fun `fast cached row has its final height at first measure without a second layout jump`() {
+        val root = FrameLayout(context)
+        val list = ChatListMarker(context)
+        root.addView(list)
+        val row = android.widget.RelativeLayout(context)
+        val message = TextView(context).apply { text = "分析目标" }
+        row.addView(message, android.widget.RelativeLayout.LayoutParams(220, ViewGroup.LayoutParams.WRAP_CONTENT))
+        val host = EmbeddedChatCardHost(context,
+            locator = WechatChatViewLocator(ChatListMarker::class.java.name),
+            resolveTarget = { _, _ -> if (row.parent != null) WechatMessageAnchor(message, false, 42L) else null },
+            readLocalMessageId = { if (it === message) 42L else null })
+        host.setFastCacheDisplay(true)
+        host.attach(root)
+        host.onAnalysisResult(result().copy(messageId = "wechat-8.0.72-42",
+            textHash = WechatMessageAnchorResolver.hash("分析目标")))
+        list.addView(row)
+        host.prepareRowForMeasure(row)
+        val width = android.view.View.MeasureSpec.makeMeasureSpec(400, android.view.View.MeasureSpec.EXACTLY)
+        val height = android.view.View.MeasureSpec.makeMeasureSpec(0, android.view.View.MeasureSpec.UNSPECIFIED)
+        row.measure(width, height)
+        val firstHeight = row.measuredHeight
+        host.renderNow()
+        row.measure(width, height)
+        assertEquals("cached interpretation must not grow the row after its first measurement", firstHeight, row.measuredHeight)
+        assertTrue(host.cardVisible)
+        repeat(5) {
+            host.prepareRowForMeasure(row)
+            row.measure(width, height)
+            assertEquals("repeated measurement must not accumulate extra height", firstHeight, row.measuredHeight)
+        }
+        assertEquals(1, host.createdCardCount)
+        host.destroy()
+    }
+
+    @Test fun `reenter restores fast cached cards when chat list is created after attach`() {
+        val root = FrameLayout(context)
+        val message = TextView(context).apply { text = "分析目标" }
+        val host = EmbeddedChatCardHost(context,
+            locator = WechatChatViewLocator(ChatListMarker::class.java.name),
+            resolveTarget = { _, _ -> WechatMessageAnchor(message, false, 42L) }, readLocalMessageId = { 42L })
+        host.setFastCacheDisplay(true)
+        host.attach(root)
+        val cached = result().copy(messageId = "wechat-8.0.72-42", textHash = WechatMessageAnchorResolver.hash("分析目标"))
+        host.onAnalysisResult(cached)
+        host.onPause()
+        host.onResume()
+        val list = ChatListMarker(context)
+        root.addView(list)
+        list.addView(message)
+        root.viewTreeObserver.dispatchOnGlobalLayout()
+        root.viewTreeObserver.dispatchOnPreDraw()
+        host.onAnalysisResult(cached)
+        shadowOf(Looper.getMainLooper()).idleFor(1100, TimeUnit.MILLISECONDS)
+        assertTrue("same cached data must recover after the native list becomes ready", host.cardVisible)
+        assertTrue(message.parent is LinearLayout)
+        host.destroy()
+    }
+    @Test fun `fast mode retains old cached results without creating offscreen cards`() {
+        val (root, _, message) = attachedRoot()
+        var visibleId: Long? = null
+        val host = EmbeddedChatCardHost(context,
+            locator = WechatChatViewLocator(ChatListMarker::class.java.name),
+            resolveTarget = { _, value -> if (value.messageId == "wechat-8.0.72-$visibleId")
+                WechatMessageAnchor(message, false, visibleId) else null },
+            readLocalMessageId = { visibleId }, maxCachedResults = 3)
+        host.attach(root)
+        host.setFastCacheDisplay(true)
+        host.onAnalysisResults((1..20).map { result().copy(messageId = "wechat-8.0.72-$it",
+            textHash = WechatMessageAnchorResolver.hash("分析目标")) })
+        assertEquals(20, host.cachedResultCount)
+        assertEquals(0, host.retainedCardCount)
+        visibleId = 1L
+        host.renderNow()
+        assertEquals(1, host.retainedCardCount)
+        assertTrue(host.cardVisible)
+        host.setFastCacheDisplay(false)
+        assertTrue(host.cachedResultCount <= 3)
+        assertTrue(host.cardVisible)
+        host.destroy()
+    }
+    @Test fun `offscreen results and views are bounded and evicted results can be restored`() {
+        val (root, _, message) = attachedRoot()
+        var target: TextView? = null
+        val host = EmbeddedChatCardHost(context,
+            locator = WechatChatViewLocator(ChatListMarker::class.java.name),
+            resolveTarget = { _, value -> target?.takeIf { value.messageId == "wechat-8.0.72-1" }
+                ?.let { WechatMessageAnchor(it, false, 1L) } },
+            maxCachedResults = 3,
+        )
+        host.attach(root)
+        val old = result().copy(messageId = "wechat-8.0.72-1", textHash = WechatMessageAnchorResolver.hash("分析目标"))
+        host.onAnalysisResults((1..8).map { old.copy(messageId = "wechat-8.0.72-$it") })
+        assertEquals(3, host.cachedResultCount)
+        assertTrue(host.retainedCardCount <= 3)
+        target = message
+        host.onAnalysisResult(old) // A normal database cache replay, not a model call.
+        assertTrue(host.cardVisible)
+        assertEquals(3, host.cachedResultCount)
+        host.destroy()
+        assertEquals(0, host.retainedCardCount)
+    }
+
+    @Test fun `memory eviction keeps attached native rows and their cards intact`() {
+        val activity = org.robolectric.Robolectric.buildActivity(android.app.Activity::class.java).setup().get()
+        val (root, _, message) = attachedRoot()
+        activity.setContentView(root)
+        shadowOf(Looper.getMainLooper()).idle()
+        val old = result().copy(messageId = "wechat-8.0.72-42", textHash = WechatMessageAnchorResolver.hash("分析目标"))
+        val host = EmbeddedChatCardHost(context,
+            locator = WechatChatViewLocator(ChatListMarker::class.java.name),
+            resolveTarget = { _, value -> if (value.messageId == old.messageId)
+                WechatMessageAnchor(message, false, 42L) else null },
+            readLocalMessageId = { 42L }, maxCachedResults = 1,
+        )
+        try {
+            host.attach(root)
+            host.onAnalysisResult(old)
+            val row = message.parent
+            host.onAnalysisResults((50..60).map { old.copy(messageId = "wechat-8.0.72-$it") })
+            assertTrue(host.cardVisible)
+            assertTrue("eviction cannot move or remove the native message", message.parent === row)
+            assertEquals(1, host.cachedResultCount)
+            assertEquals(1, host.retainedCardCount)
+        } finally { host.destroy(); activity.finish() }
+    }
+
+    @Test fun `batch resolves all message anchors once and successful mounts stop timed retries`() {
+        val (root, container, first) = attachedRoot()
+        val second = TextView(context).apply { text = "第二条" }
+        container.addView(second)
+        var scans = 0
+        var identityReads = 0
+        val values = listOf(
+            result().copy(messageId = "wechat-8.0.72-42", textHash = WechatMessageAnchorResolver.hash("分析目标")),
+            result().copy(messageId = "wechat-8.0.72-43", textHash = WechatMessageAnchorResolver.hash("第二条")),
+        )
+        val host = EmbeddedChatCardHost(context,
+            locator = WechatChatViewLocator(ChatListMarker::class.java.name),
+            resolveTarget = { _, _ -> error("use batch resolver") },
+            resolveTargets = { _, results ->
+                scans++
+                results.associate { it.messageId to if (it.messageId.endsWith("42"))
+                    WechatMessageAnchor(first, false, 42L) else WechatMessageAnchor(second, false, 43L) }
+            },
+            readLocalMessageId = { identityReads++; if (it === first) 42L else 43L },
+        )
+        host.attach(root)
+        host.onAnalysisResults(values)
+        assertEquals("one anchor traversal per cache batch", 1, scans)
+        assertEquals(2, host.createdCardCount)
+        assertTrue(host.cardVisible)
+        val readsAfterMount = identityReads
+        shadowOf(Looper.getMainLooper()).idleFor(2, TimeUnit.SECONDS)
+        assertEquals("successful mounting should cancel scheduled retry work", readsAfterMount, identityReads)
+        host.destroy()
+    }
+
     private val context: Context
         get() = RuntimeEnvironment.getApplication()
 

@@ -42,6 +42,57 @@ import org.junit.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class RealtimeAnalysisCoordinatorTest {
+    @Test fun `a batch miss filled while another target is analyzed is reused without a second model call`() = runTest {
+        val cache = RecordingAnalysisResultCache()
+        val records = (1L..2L).map { com.jev.relationship.ipc.LocalChatRecord(it, "消息$it", it, false) }
+        var calls = 0
+        val analyzer = ConversationAnalyzer {
+            calls++
+            cache.save("wechat-8.0.72-1", IpcAnalysisResult("wechat-8.0.72-1", "chat", "text", false,
+                emotion = "平静", intents = emptyList(), riskLevel = 0, suggestion = "保持清晰", detailContextual = true))
+            output()
+        }
+        val coordinator = fixture(MessageCaptureCoordinator(), analyzer, scope = backgroundScope,
+            resultCache = cache, localHistory = com.jev.relationship.domain.source.LocalConversationHistory { _, _ -> records })
+        coordinator.setEnabled(true)
+        coordinator.submitVisibleConversation(VisibleChatConversation("chat", "聊天", "消息2", false,
+            records.map { VisibleChatMessage(it.text, false, 0, localMessageId = it.id) }))
+        advanceTimeBy(701); runCurrent()
+        assertEquals(1, calls)
+    }
+
+    @Test fun `history cache hits use one batch lookup and one batch delivery without analysis`() = runTest {
+        val records = (1L..4L).map { com.jev.relationship.ipc.LocalChatRecord(it, "消息$it", it, false) }
+        val values = records.associate { record -> "wechat-8.0.72-${record.id}" to IpcAnalysisResult(
+            "wechat-8.0.72-${record.id}", "chat", "text", false, emotion = "平静", intents = emptyList(),
+            riskLevel = 0, suggestion = "保持清晰", detailContextual = true) }
+        var singleReads = 0
+        var batchReads = 0
+        val cache = object : AnalysisResultCache {
+            override suspend fun find(messageId: String): IpcAnalysisResult? { singleReads++; return values[messageId] }
+            override suspend fun findAll(messageIds: Collection<String>): Map<String, IpcAnalysisResult> {
+                batchReads++; return values.filterKeys { it in messageIds }
+            }
+            override suspend fun save(messageId: String, result: IpcAnalysisResult) = Unit
+        }
+        val sink = RecordingAnalysisResultSink()
+        val analyzer = RecordingAnalyzer()
+        val coordinator = fixture(MessageCaptureCoordinator(), analyzer, scope = backgroundScope,
+            resultCache = cache, resultSink = sink,
+            localHistory = com.jev.relationship.domain.source.LocalConversationHistory { _, _ -> records })
+        coordinator.setEnabled(true)
+        coordinator.submitVisibleConversation(VisibleChatConversation("chat", "聊天", "消息4", false,
+            records.map { VisibleChatMessage(it.text, false, 0, localMessageId = it.id) }))
+        runCurrent() // Fast visible-cache recovery is separate from the history sweep.
+        singleReads = 0; batchReads = 0; sink.batches.clear(); sink.results.clear()
+        advanceTimeBy(701); runCurrent()
+        assertEquals("history must fetch cached targets together", 1, batchReads)
+        assertEquals(0, singleReads)
+        assertEquals(1, sink.batches.size)
+        assertEquals(4, sink.batches.single().size)
+        assertTrue(analyzer.calls.isEmpty())
+    }
+
     @Test
     fun `reply suggestion uses latest incoming even when viewing old messages and reuses its cache`() = runTest {
         val sink = RecordingAnalysisResultSink()
@@ -177,7 +228,8 @@ class RealtimeAnalysisCoordinatorTest {
         runCurrent()
 
         assertEquals(1, analyzer.calls.size)
-        assertEquals(3, cache.findCount)
+        assertEquals(1, cache.findCount)
+        assertEquals(3, cache.batchFindCount)
         assertEquals(2, sink.results.size)
     }
 
@@ -974,6 +1026,11 @@ class RealtimeAnalysisCoordinatorTest {
     }
 
     private class RecordingAnalysisResultSink : IpcAnalysisResultSink {
+        val batches = mutableListOf<List<IpcAnalysisResult>>()
+        override fun publishAll(results: List<IpcAnalysisResult>) {
+            batches += results
+            results.forEach(::publish)
+        }
         val replySuggestions = mutableListOf<com.jev.relationship.ipc.IpcReplySuggestion>()
         override fun publishReplySuggestion(suggestion: com.jev.relationship.ipc.IpcReplySuggestion) { replySuggestions += suggestion }
         val results = mutableListOf<IpcAnalysisResult>()
@@ -991,7 +1048,13 @@ class RealtimeAnalysisCoordinatorTest {
     private class RecordingAnalysisResultCache : AnalysisResultCache {
         private val values = mutableMapOf<String, IpcAnalysisResult>()
         var findCount = 0
+        var batchFindCount = 0
         val savedMessageIds = mutableListOf<String>()
+
+        override suspend fun findAll(messageIds: Collection<String>): Map<String, IpcAnalysisResult> {
+            batchFindCount++
+            return messageIds.mapNotNull { id -> values[id]?.let { id to it } }.toMap()
+        }
 
         override suspend fun find(messageId: String): IpcAnalysisResult? {
             findCount++

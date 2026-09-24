@@ -13,6 +13,15 @@ import org.junit.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class DataStoreRealtimeAssistantRepositoryTest {
+    @Test fun `fast cache preference defaults on and survives repository recreation`() = runBlocking {
+        val store = InMemoryDataStore()
+        val repository = DataStoreRealtimeAssistantRepository(store)
+        assertTrue(repository.settings.first().fastCacheDisplay)
+        repository.setFastCacheDisplay(false)
+        repository.setEnabled(true)
+        assertFalse(DataStoreRealtimeAssistantRepository(store).settings.first().fastCacheDisplay)
+        assertTrue(repository.settings.first().enabled)
+    }
     @Test
     fun `fresh repository is disabled and enabled state persists`() = runBlocking {
         val repository = DataStoreRealtimeAssistantRepository(InMemoryDataStore())

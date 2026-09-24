@@ -24,7 +24,8 @@ class IpcClientState(
             pairingToken = token,
             sourcePackage = IpcProtocol.WECHAT_PACKAGE,
             moduleVersion = moduleVersion,
-            capabilities = setOf(IpcCapabilities.EMBEDDED_CHAT_CARD, IpcCapabilities.LOCAL_HISTORY),
+            capabilities = setOf(IpcCapabilities.EMBEDDED_CHAT_CARD, IpcCapabilities.LOCAL_HISTORY,
+                IpcCapabilities.ANALYSIS_RESULT_BATCH, IpcCapabilities.CACHE_PRELOAD),
         )
     }
 

@@ -3,6 +3,20 @@ package com.jev.relationship.ipc
 import android.os.Bundle
 
 object IpcCodec {
+    fun encodeAnalysisResults(results: List<IpcAnalysisResult>): Bundle {
+        require(results.size in 1..IpcProtocol.MAX_BATCH_SIZE)
+        return Bundle().apply {
+            putParcelableArrayList(IpcProtocol.KEY_ANALYSIS_RESULTS, ArrayList(results.map(::encodeAnalysisResult)))
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    fun decodeAnalysisResults(bundle: Bundle): List<IpcAnalysisResult> {
+        val results = requireNotNull(bundle.getParcelableArrayList<Bundle>(IpcProtocol.KEY_ANALYSIS_RESULTS))
+        require(results.size in 1..IpcProtocol.MAX_BATCH_SIZE)
+        return results.map(::decodeAnalysisResult)
+    }
+
     fun encodeHandshakeResult(result: HandshakeResult): Bundle = Bundle().apply {
         putBoolean(IpcProtocol.KEY_ACCEPTED, result.accepted)
         putString(IpcProtocol.KEY_REASON, result.reason?.name)

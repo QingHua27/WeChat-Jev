@@ -11,6 +11,8 @@ class IpcResponseRouter(
     private val onHandshake: (HandshakeResult) -> Unit,
     private val onAnalysisResult: (IpcAnalysisResult) -> Unit,
     private val onAnalysisCleared: () -> Unit = {},
+    private val onAnalysisResults: (List<IpcAnalysisResult>) -> Unit = { it.forEach(onAnalysisResult) },
+    private val onFastCacheDisplay: (Boolean) -> Unit = {},
 ) {
     private data class PendingAssistantRequest(
         val conversationId: String,
@@ -46,6 +48,17 @@ class IpcResponseRouter(
     }
 
     fun handle(message: Message): Boolean = when (message.what) {
+        IpcProtocol.MSG_CACHE_DISPLAY_MODE -> {
+            if (message.data.containsKey(IpcProtocol.KEY_FAST_CACHE_DISPLAY)) {
+                onFastCacheDisplay(message.data.getBoolean(IpcProtocol.KEY_FAST_CACHE_DISPLAY))
+            }
+            true
+        }
+        IpcProtocol.MSG_ANALYSIS_BATCH -> {
+            runCatching { IpcCodec.decodeAnalysisResults(message.data) }
+                .onSuccess(onAnalysisResults)
+            true
+        }
         IpcProtocol.MSG_ANALYSIS_CLEAR -> {
             onAnalysisCleared()
             true

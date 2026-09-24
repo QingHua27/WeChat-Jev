@@ -17,6 +17,35 @@ import org.robolectric.RobolectricTestRunner
 
 @RunWith(RobolectricTestRunner::class)
 class IpcResponseRouterTest {
+    @Test fun `cache display setting routes explicit values and ignores missing field`() {
+        val modes = mutableListOf<Boolean>()
+        val router = IpcResponseRouter({}, {}, onFastCacheDisplay = modes::add)
+        router.handle(Message.obtain(null, IpcProtocol.MSG_CACHE_DISPLAY_MODE))
+        listOf(true, false).forEach { enabled ->
+            router.handle(Message.obtain(null, IpcProtocol.MSG_CACHE_DISPLAY_MODE).apply {
+                data = android.os.Bundle().apply { putBoolean(IpcProtocol.KEY_FAST_CACHE_DISPLAY, enabled) }
+            })
+        }
+        assertEquals(listOf(true, false), modes)
+    }
+    @Test fun `analysis batches route atomically and reject malformed groups`() {
+        val batches = mutableListOf<List<IpcAnalysisResult>>()
+        val router = IpcResponseRouter({}, { error("batch must not be split into individual callbacks") },
+            onAnalysisResults = batches::add)
+        val expected = listOf(result(), result().copy(messageId = "second"))
+        assertTrue(router.handle(Message.obtain(null, IpcProtocol.MSG_ANALYSIS_BATCH).apply {
+            data = IpcCodec.encodeAnalysisResults(expected)
+        }))
+        assertEquals(listOf(expected), batches)
+        router.handle(Message.obtain(null, IpcProtocol.MSG_ANALYSIS_BATCH).apply {
+            data = android.os.Bundle().apply {
+                putParcelableArrayList(IpcProtocol.KEY_ANALYSIS_RESULTS,
+                    arrayListOf(IpcCodec.encodeAnalysisResult(result()), android.os.Bundle()))
+            }
+        })
+        assertEquals("invalid batch must not partially render", 1, batches.size)
+    }
+
     @Test
     fun `partial results keep request pending until final and reject another conversation`() {
         val results = mutableListOf<ChatAssistantResult>()

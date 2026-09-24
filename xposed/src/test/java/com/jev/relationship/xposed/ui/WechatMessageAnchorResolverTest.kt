@@ -18,6 +18,30 @@ import org.robolectric.RuntimeEnvironment
 
 @RunWith(RobolectricTestRunner::class)
 class WechatMessageAnchorResolverTest {
+    @Test fun `unmeasured bound row resolves by identity and text without viewport bounds`() {
+        val row = android.widget.RelativeLayout(context)
+        val message = TextView(context).apply { text = "分析目标" }
+        row.addView(message)
+        val resolver = WechatMessageAnchorResolver(localMessageId = { if (it === message) 42L else null })
+        val cached = result("分析目标", false, messageId = "wechat-8.0.72-42")
+        assertEquals(0, message.width)
+        assertSame(message, resolver.resolveBoundRow(row, mapOf(cached.messageId to cached))[cached.messageId]?.message)
+        message.text = "另一条消息"
+        assertTrue(resolver.resolveBoundRow(row, mapOf(cached.messageId to cached)).isEmpty())
+    }
+    @Test fun `preloaded lookup reads only visible stable ids and verifies text`() {
+        val container = container()
+        val message = text("相同内容", 20, 100, 180, 150)
+        container.addView(message)
+        val cached = result("相同内容", false, messageId = "wechat-8.0.72-42")
+        val resolver = WechatMessageAnchorResolver(localMessageId = { 42L })
+        val map = object : Map<String, IpcAnalysisResult> by mapOf(cached.messageId to cached) {
+            override val entries: Set<Map.Entry<String, IpcAnalysisResult>> get() = error("must not scan whole cache")
+            override val values: Collection<IpcAnalysisResult> get() = error("must not scan whole cache")
+        }
+        assertSame(message, resolver.resolveCached(container, map)[cached.messageId]?.message)
+        assertTrue(resolver.resolveCached(container, mapOf(cached.messageId to cached.copy(textHash = "wrong"))).isEmpty())
+    }
     private val context: Context
         get() = RuntimeEnvironment.getApplication()
 

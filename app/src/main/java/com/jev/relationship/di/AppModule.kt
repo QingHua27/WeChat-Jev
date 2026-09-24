@@ -73,6 +73,7 @@ object AppModule {
         .addMigrations(JEV_DATABASE_MIGRATION_1_2)
         .addMigrations(JEV_DATABASE_MIGRATION_2_3)
         .addMigrations(JevDatabaseMigrations.VERSION_3_TO_4)
+        .addMigrations(JevDatabaseMigrations.VERSION_4_TO_5)
         .build()
 
     @Provides

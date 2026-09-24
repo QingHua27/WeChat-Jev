@@ -12,7 +12,7 @@ import androidx.room.RoomDatabase
         ChatAssistantSessionEntity::class,
         ChatAssistantTurnEntity::class,
     ],
-    version = 4,
+    version = 5,
     exportSchema = false,
 )
 abstract class JevDatabase : RoomDatabase() {

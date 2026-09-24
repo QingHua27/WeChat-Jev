@@ -13,6 +13,42 @@ import org.robolectric.RuntimeEnvironment
 
 @RunWith(RobolectricTestRunner::class)
 class AnalysisResultCachePersistenceTest {
+    @Test fun `conversation preload includes older cached messages and excludes other chats`() = runBlocking {
+        val db = Room.inMemoryDatabaseBuilder(RuntimeEnvironment.getApplication(), JevDatabase::class.java)
+            .allowMainThreadQueries().build()
+        try {
+            val cache = RoomAnalysisResultCache(db.analysisResultCacheDao())
+            for (id in 1..301) cache.save("wechat-8.0.72-$id", cachedResult().copy(messageId = "wechat-8.0.72-$id"))
+            cache.save("wechat-8.0.72-999", cachedResult().copy(messageId = "wechat-8.0.72-999", conversationHash = "other"))
+            val loaded = mutableListOf<IpcAnalysisResult>()
+            cache.conversationResults("chat").collect { loaded.addAll(it) }
+            assertEquals(301, loaded.size)
+            assertEquals(301, loaded.map { it.messageId }.distinct().size)
+            assertEquals(true, loaded.all { it.conversationHash == "chat" })
+        } finally { db.close() }
+    }
+    @Test fun `batch cache preserves legacy validity rules and isolates corrupt entries`() = runBlocking {
+        val database = Room.inMemoryDatabaseBuilder(RuntimeEnvironment.getApplication(), JevDatabase::class.java)
+            .allowMainThreadQueries().build()
+        try {
+            database.analysisDao().insert(AnalysisEntity(83, "x".repeat(5000), "平静", "[]", 0, "", "[]", 1L))
+            database.analysisDao().insert(AnalysisEntity(84, "short", "平静", "[]", 0, "", "[]", 1L))
+            val dao = database.analysisResultCacheDao()
+            val valid = cachedResult()
+            val oldLong = valid.copy(messageId = "wechat-8.0.72-43", historyId = 83)
+            val oldShort = valid.copy(messageId = "wechat-8.0.72-44", historyId = 84)
+            val failed = valid.copy(messageId = "wechat-8.0.72-45", detailContextual = false,
+                detailIntention = "理解模型已配置，但本次调用失败")
+            dao.save(AnalysisResultCacheEntity.from(42, valid))
+            dao.save(AnalysisResultCacheEntity(43, Gson().toJson(oldLong), 1L))
+            dao.save(AnalysisResultCacheEntity(44, Gson().toJson(oldShort), 1L))
+            dao.save(AnalysisResultCacheEntity.from(45, failed))
+            dao.save(AnalysisResultCacheEntity(46, "invalid json", 1L))
+            val found = RoomAnalysisResultCache(dao).findAll((42..46).map { "wechat-8.0.72-$it" })
+            assertEquals(mapOf(valid.messageId to valid, oldShort.messageId to oldShort), found)
+        } finally { database.close() }
+    }
+
     @Test
     fun `legacy long history interpretation is invalidated and regenerated result stays cached`() = runBlocking {
         val context = RuntimeEnvironment.getApplication()

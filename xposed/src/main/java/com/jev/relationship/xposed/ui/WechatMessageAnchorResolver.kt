@@ -84,6 +84,39 @@ class WechatMessageAnchorResolver(
         return candidates
     }
 
+    fun resolveCached(
+        container: ViewGroup,
+        results: Map<String, IpcAnalysisResult>,
+    ): Map<String, WechatMessageAnchor> {
+        if (results.isEmpty()) return emptyMap()
+        val candidates = collectCandidates(container)
+        return candidates.mapNotNull { it.localMessageId }.distinct().mapNotNull { id ->
+            val result = results["wechat-8.0.72-$id"] ?: return@mapNotNull null
+            resolveFromCandidates(result, candidates)?.let { result.messageId to it }
+        }.toMap()
+    }
+
+    /** A bound RecyclerView row has an ID and text before it has any bounds. */
+    fun resolveBoundRow(row: ViewGroup, results: Map<String, IpcAnalysisResult>): Map<String, WechatMessageAnchor> {
+        val matches = linkedMapOf<String, WechatMessageAnchor>()
+        val ambiguous = mutableSetOf<String>()
+        fun visit(view: View) {
+            if (view is JevEmbeddedAnalysisCardView || view is EditText || view.visibility == View.GONE) return
+            val id = localMessageId(view)
+            if (id != null) {
+                val key = "wechat-8.0.72-$id"
+                val result = results[key]
+                if (result != null && !result.isOutgoing && matchesPrimaryText(view, result.textHash) == true) {
+                    if (matches.put(key, WechatMessageAnchor(view, false, id)) != null) ambiguous += key
+                }
+            }
+            if (view is ViewGroup) for (index in 0 until view.childCount) visit(view.getChildAt(index))
+        }
+        visit(row)
+        ambiguous.forEach(matches::remove)
+        return matches
+    }
+
     private fun resolveFromCandidates(
         result: IpcAnalysisResult,
         candidates: List<Candidate>,

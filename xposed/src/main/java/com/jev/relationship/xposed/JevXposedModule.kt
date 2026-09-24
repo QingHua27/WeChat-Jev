@@ -62,7 +62,7 @@ class JevXposedModule : XposedModule() {
                 getRemotePreferences(XposedModulePreferences.NAME)
                     .getString(XposedModulePreferences.PAIRING_TOKEN, null)
             },
-            moduleVersion = "0.1.0",
+            moduleVersion = "0.1.1",
             onAnalysisResult = { result -> chatUiHook?.onAnalysisResult(result) },
             onReplySuggestion = { result -> chatUiHook?.onReplySuggestion(result) },
             onDisconnected = { chatUiHook?.clear() },

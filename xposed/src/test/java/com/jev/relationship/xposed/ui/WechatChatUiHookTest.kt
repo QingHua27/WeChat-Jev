@@ -186,8 +186,8 @@ class WechatChatUiHookTest {
         hook.install()
         try {
             installer.callback("onCreateView", root, AssistantChatFragment(activity))
-            shadowOf(Looper.getMainLooper()).idleFor(400, TimeUnit.MILLISECONDS)
-            assertEquals(1, snapshotCount)
+            shadowOf(Looper.getMainLooper()).idle()
+            assertEquals("entry should restore the cache without waiting for scroll debounce", 1, snapshotCount)
 
             root.viewTreeObserver.dispatchOnGlobalLayout()
             shadowOf(Looper.getMainLooper()).idleFor(400, TimeUnit.MILLISECONDS)
@@ -212,6 +212,77 @@ class WechatChatUiHookTest {
             hook.uninstall()
             activity.finish()
         }
+    }
+
+    @Test fun `entry retries late rows promptly and reconnect resumes without debounce`() {
+        withSnapshotFixture { hook, installer, fragment, root, chatList, snapshots ->
+            val looper = shadowOf(Looper.getMainLooper())
+            installer.callback("onCreateView", root, fragment)
+            installer.callback("onResume", null, fragment)
+            looper.idle()
+            assertTrue(snapshots.isEmpty())
+            addVisibleMessage(chatList, "hello")
+            repeat(2) {
+                root.viewTreeObserver.javaClass.getDeclaredMethod("dispatchOnScrollChanged").apply {
+                    isAccessible = true
+                }.invoke(root.viewTreeObserver)
+                looper.idleFor(50, TimeUnit.MILLISECONDS)
+            }
+            assertEquals("layout and scroll must not postpone entry recovery", listOf("alice"), snapshots)
+            hook.clear()
+            hook.onConnectionRestored()
+            looper.idle()
+            assertEquals("reconnection should immediately request cached visible results", 2, snapshots.size)
+            looper.idleFor(2, TimeUnit.SECONDS)
+            assertEquals("successful entry must stop readiness retries", 2, snapshots.size)
+        }
+    }
+
+    @Test fun `paused entry cancels pending scans and next chat never publishes old conversation`() {
+        withSnapshotFixture { _, installer, fragment, root, chatList, snapshots ->
+            val looper = shadowOf(Looper.getMainLooper())
+            installer.callback("onCreateView", root, fragment)
+            installer.callback("onResume", null, fragment)
+            looper.idle()
+            installer.callback("onPause", null, fragment)
+            addVisibleMessage(chatList, "hello")
+            looper.idleFor(2, TimeUnit.SECONDS)
+            assertTrue("paused readiness retries must not submit messages", snapshots.isEmpty())
+            fragment.conversationId = "bob"
+            JevConversationAnalysisPrefs.setEnabled(context, "bob", true)
+            installer.callback("onResume", null, fragment)
+            looper.idle()
+            assertEquals(listOf("bob"), snapshots)
+        }
+    }
+
+    private fun withSnapshotFixture(block: (WechatChatUiHook, RecordingInstaller, AssistantChatFragment,
+        FrameLayout, ChatListMarker, MutableList<String>) -> Unit) {
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        val installer = RecordingInstaller()
+        val root = FrameLayout(activity)
+        val list = ChatListMarker(activity)
+        root.addView(list)
+        root.layout(0, 0, 400, 800)
+        list.layout(0, 0, 400, 800)
+        val snapshots = mutableListOf<String>()
+        val fragment = AssistantChatFragment(activity).apply { view = root }
+        JevConversationAnalysisPrefs.setEnabled(activity, "alice", true)
+        val hook = WechatChatUiHook(activity, installer,
+            classResolver = { _, _ -> AssistantChatFragment::class.java },
+            visibleParser = WechatVisibleChatSnapshotParser(WechatChatViewLocator(ChatListMarker::class.java.name)),
+            onVisibleChat = { snapshots += it.conversationId },
+        )
+        hook.install()
+        try { block(hook, installer, fragment, root, list, snapshots) }
+        finally { hook.uninstall(); activity.finish() }
+    }
+
+    private fun addVisibleMessage(list: ChatListMarker, text: String) {
+        list.addView(TextView(list.context).apply {
+            this.text = text
+            layout(20, 100, 180, 150)
+        })
     }
 
     @Test
@@ -542,6 +613,7 @@ class WechatChatUiHookTest {
 
     class AssistantChatFragment(private val activity: Activity) {
         var conversationId = "alice"
+        var view: View? = null
         fun getStringExtra(name: String): String? = if (name == "Chat_User") conversationId else null
         fun getActivity(): Activity = activity
         fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, state: Bundle?): View? = null

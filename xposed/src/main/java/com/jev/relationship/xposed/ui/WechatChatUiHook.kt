@@ -83,6 +83,24 @@ class WechatChatUiHook(
         snapshotScheduled = false
         publishVisibleSnapshot()
     }
+    private var entrySnapshotPending = false
+    private var entryRetryIndex = 0
+    private val entrySnapshotRunnable = object : Runnable {
+        override fun run() {
+            if (!entrySnapshotPending) return
+            if (snapshotRoot == null || !activeAnalysisEnabled || publishVisibleSnapshot()) {
+                entrySnapshotPending = false
+                return
+            }
+            // WeChat can resume before its message rows are bound. Retry readiness
+            // independently of scroll debounce, then stop rather than polling forever.
+            if (entryRetryIndex < ENTRY_RETRY_DELAYS_MS.size) {
+                mainHandler.postDelayed(this, ENTRY_RETRY_DELAYS_MS[entryRetryIndex++])
+            } else {
+                entrySnapshotPending = false
+            }
+        }
+    }
     private val snapshotScrollListener = android.view.ViewTreeObserver.OnScrollChangedListener {
         scheduleVisibleSnapshot()
     }
@@ -135,7 +153,7 @@ class WechatChatUiHook(
         if (!chatResumed) return
         host?.setAnalysisEnabled(activeAnalysisEnabled)
         replyBar.setEnabled(activeAnalysisEnabled)
-        scheduleVisibleSnapshot()
+        requestImmediateSnapshot()
     }
 
     fun onReplySuggestion(result: com.jev.relationship.ipc.IpcReplySuggestion) {
@@ -153,6 +171,7 @@ class WechatChatUiHook(
 
     @Synchronized
     fun uninstall() {
+        cancelSnapshotRequests()
         runCatching { hookHandles.forEach(WechatHookHandle::unhook) }
         hookHandles.clear()
         host?.destroy()
@@ -230,7 +249,7 @@ class WechatChatUiHook(
             installActionButtons(root)
             observeVisibleMessages(root)
             attachReplyBar(root)
-            scheduleVisibleSnapshot()
+            requestImmediateSnapshot()
         }
         host?.setAnalysisEnabled(activeAnalysisEnabled)
         host?.onResume()
@@ -243,8 +262,7 @@ class WechatChatUiHook(
         chatResumed = false
         host?.onPause()
         replyBar.setResumed(false)
-        mainHandler.removeCallbacks(snapshotRunnable)
-        snapshotScheduled = false
+        cancelSnapshotRequests()
     }
 
     private fun handleDestroyView() {
@@ -254,8 +272,7 @@ class WechatChatUiHook(
         snapshotRoot?.viewTreeObserver?.takeIf { it.isAlive }
             ?.removeOnScrollChangedListener(snapshotScrollListener)
         snapshotRoot = null
-        mainHandler.removeCallbacks(snapshotRunnable)
-        snapshotScheduled = false
+        cancelSnapshotRequests()
         toggleButton?.let { button -> (button.parent as? ViewGroup)?.removeView(button) }
         assistantButton?.let { button -> (button.parent as? ViewGroup)?.removeView(button) }
         assistantDialog?.dismiss()
@@ -330,7 +347,7 @@ class WechatChatUiHook(
                 host?.setAnalysisEnabled(activeAnalysisEnabled)
                 replyBar.setEnabled(activeAnalysisEnabled)
                 onConversationToggle(activeConversationId, activeConversationTitle, activeAnalysisEnabled)
-                if (activeAnalysisEnabled) scheduleVisibleSnapshot()
+                if (activeAnalysisEnabled) requestImmediateSnapshot() else cancelSnapshotRequests()
                 Toast.makeText(context, if (activeAnalysisEnabled) "已开启解析，优先读取缓存"
                     else "已隐藏解析气泡，缓存已保留", Toast.LENGTH_SHORT).show()
             }
@@ -480,29 +497,46 @@ class WechatChatUiHook(
             ?.removeOnScrollChangedListener(snapshotScrollListener)
         snapshotRoot = root
         root.viewTreeObserver.addOnScrollChangedListener(snapshotScrollListener)
-        scheduleVisibleSnapshot()
+        requestImmediateSnapshot()
+    }
+
+    private fun requestImmediateSnapshot() {
+        cancelSnapshotRequests()
+        if (snapshotRoot == null || activeConversationId.isBlank() || !activeAnalysisEnabled) return
+        entrySnapshotPending = true
+        entryRetryIndex = 0
+        // Run after the lifecycle callback, without imposing the scroll quiet window.
+        mainHandler.post(entrySnapshotRunnable)
+    }
+
+    private fun cancelSnapshotRequests() {
+        mainHandler.removeCallbacks(snapshotRunnable)
+        mainHandler.removeCallbacks(entrySnapshotRunnable)
+        snapshotScheduled = false
+        entrySnapshotPending = false
     }
 
     private fun scheduleVisibleSnapshot() {
         if (activeConversationId.isBlank() || !activeAnalysisEnabled) return
+        if (entrySnapshotPending) return
         snapshotScheduled = true
         mainHandler.removeCallbacks(snapshotRunnable)
         mainHandler.postDelayed(snapshotRunnable, SNAPSHOT_DEBOUNCE_MS)
     }
 
-    private fun publishVisibleSnapshot() {
-        val root = snapshotRoot ?: return
+    private fun publishVisibleSnapshot(): Boolean {
+        val root = snapshotRoot ?: return false
         val conversationId = activeConversationId
-        if (conversationId.isBlank() || !activeAnalysisEnabled) return
+        if (conversationId.isBlank() || !activeAnalysisEnabled) return false
         val snapshot = runCatching {
             visibleParser.parse(root, conversationId, context.resources.displayMetrics.widthPixels)
         }.onFailure { Log.w(TAG, "visible message scan failed type=${it.javaClass.simpleName}") }
             .getOrNull()
         if (snapshot == null) {
             Log.d(TAG, "visible snapshot empty conversation=${conversationId.hashCode()}")
-            return
+            return false
         }
-        if (snapshot == lastPublishedSnapshot) return
+        if (snapshot == lastPublishedSnapshot) return true
         lastPublishedSnapshot = snapshot
         Log.i(
             TAG,
@@ -510,6 +544,7 @@ class WechatChatUiHook(
                 "conversation=${conversationId.hashCode()}",
         )
         onVisibleChat(snapshot)
+        return true
     }
 
     private fun findTitle(root: View): String {
@@ -541,5 +576,6 @@ class WechatChatUiHook(
         private const val TAG = "JevChatUiHook"
         private const val WECHAT_ACTION_BAR_ID = "dln"
         private const val SNAPSHOT_DEBOUNCE_MS = 350L
+        private val ENTRY_RETRY_DELAYS_MS = longArrayOf(80L, 220L, 500L)
     }
 }

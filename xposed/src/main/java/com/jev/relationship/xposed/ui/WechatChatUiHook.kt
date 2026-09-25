@@ -143,10 +143,11 @@ class WechatChatUiHook(
             runCatching { handles.forEach(WechatHookHandle::unhook) }
             return HookInstallResult.FAILED
         }
-        // WeChat 8.0.72 uses RelativeLayout message rows. Restore cached cards
-        // before native measurement; the host immediately ignores other rows.
+        // Hook the final measurement entry point: native rows can override
+        // onMeasure without calling RelativeLayout.onMeasure. The host only
+        // accepts direct children of the current chat list.
         runCatching {
-            val measure = RelativeLayout::class.java.getDeclaredMethod("onMeasure",
+            val measure = View::class.java.getDeclaredMethod("measure",
                 Int::class.javaPrimitiveType, Int::class.javaPrimitiveType)
             installer.installBefore(measure) { row ->
                 (row as? View)?.let { host?.prepareRowForMeasure(it) }

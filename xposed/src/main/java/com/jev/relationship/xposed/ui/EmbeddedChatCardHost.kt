@@ -21,6 +21,10 @@ class EmbeddedChatCardHost(
     fun prepareRowForMeasure(row: View) {
         if (!fastCacheDisplay || !active || !analysisEnabled || destroyed || results.isEmpty() ||
             row.parent !== chatList || row !is ViewGroup) return
+        if (!measurementPreparationLogged) {
+            measurementPreparationLogged = true
+            Log.i(TAG, "cached row preparation active before native measurement; list=${chatList?.javaClass?.name}")
+        }
         // Remove a previous owner's card before the recycled row is measured.
         // Keep the native message intact and never expose a different message's result.
         rendered.values.forEach { entry ->
@@ -42,10 +46,6 @@ class EmbeddedChatCardHost(
             val mounted = entry.inserter.insertBelow(target.message, entry.view, false)
             if (oldParent !== entry.view.parent) {
                 layoutRevision++
-                if (!measurementPreparationLogged && mounted) {
-                    measurementPreparationLogged = true
-                    Log.i(TAG, "cached row preparation active before native measurement")
-                }
             }
             if (mounted) {
                 entry.anchor = target.message
@@ -157,7 +157,7 @@ class EmbeddedChatCardHost(
         if (now - lastDiagnosticAt > 3_000L) {
             lastDiagnosticAt = now
             val entry = rendered[value.messageId]
-            Log.i(TAG, "surface active=$active enabled=$analysisEnabled destroyed=$destroyed " +
+            Log.i(TAG, "surface active=$active enabled=$analysisEnabled fast=$fastCacheDisplay destroyed=$destroyed " +
                 "cached=${results.size} rootAttached=${rootView?.isAttachedToWindow} listShown=${chatList?.isShown} " +
                 "listChildren=${chatList?.childCount} entry=${entry != null} invalid=${entry?.invalidated} " +
                 "identity=${entry?.let { hasStableIdentity(it, value) }} cardShown=${entry?.view?.isShown} " +

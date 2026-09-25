@@ -10,23 +10,27 @@ data class WechatChatViewHost(
 
 class WechatChatViewLocator(
     private val chatListClassName: String = CHAT_LIST_CLASS_NAME,
+    private val resourceName: (View) -> String? = { view ->
+        if (view.id == View.NO_ID) null else runCatching { view.resources.getResourceEntryName(view.id) }.getOrNull()
+    },
 ) {
     fun locate(root: View): WechatChatViewHost? {
         val matches = mutableListOf<View>()
         collect(root, matches)
-        val chatList = matches
+        // MMChattingListView is an outer wrapper on 8.0.72. Prefer its actual
+        // message recycler so row preparation runs before each row is measured.
+        val candidates = matches.filter { resourceName(it) == CHAT_LIST_RESOURCE_ID }.ifEmpty { matches }
+        val chatList = candidates
             .filter { it.isShown && it.width > 0 && it.height > 0 }
             .maxByOrNull { it.width.toLong() * it.height }
-            ?: matches.singleOrNull()
+            ?: candidates.singleOrNull()
             ?: return null
         val container = chatList.parent as? ViewGroup ?: root as? ViewGroup ?: return null
         return WechatChatViewHost(chatList = chatList, container = container)
     }
 
     private fun collect(view: View, matches: MutableList<View>) {
-        val resourceName = if (view.id == View.NO_ID) null else
-            runCatching { view.resources.getResourceEntryName(view.id) }.getOrNull()
-        if (view.javaClass.name == chatListClassName || resourceName == CHAT_LIST_RESOURCE_ID) matches += view
+        if (view.javaClass.name == chatListClassName || resourceName(view) == CHAT_LIST_RESOURCE_ID) matches += view
         if (view is ViewGroup) {
             for (index in 0 until view.childCount) {
                 collect(view.getChildAt(index), matches)

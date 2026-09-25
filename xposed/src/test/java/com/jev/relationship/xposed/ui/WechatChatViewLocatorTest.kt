@@ -15,6 +15,20 @@ class WechatChatViewLocatorTest {
         get() = RuntimeEnvironment.getApplication()
 
     @Test
+    fun `native message recycler is selected instead of its larger matching wrapper`() {
+        val root = FrameLayout(context)
+        val wrapper = ChatListMarker(context)
+        val recycler = FrameLayout(context)
+        root.addView(wrapper)
+        wrapper.addView(recycler)
+        val locator = WechatChatViewLocator(ChatListMarker::class.java.name,
+            resourceName = { if (it === recycler) "c9o" else null })
+
+        assertEquals(recycler, locator.locate(root)?.chatList)
+        assertEquals(wrapper, locator.locate(root)?.container)
+    }
+
+    @Test
     fun `finds the chat list and nearest usable parent`() {
         val root = FrameLayout(context)
         val container = FrameLayout(context)
